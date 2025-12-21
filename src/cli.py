@@ -22,6 +22,82 @@ load_dotenv(override=True)
 
 console = Console()
 
+def _filter_think_streaming(
+    chunk: str,
+    buffer: str,
+    state: str
+) -> tuple[str, str, str]:
+    """
+    Filter think blocks during streaming.
+
+    Uses inverted logic: suppress all output until </think> is seen.
+    This handles both <think>...</think> blocks and missing opening tags.
+
+    States:
+    - "detecting": Haven't determined if there's a think block yet
+    - "in_think": Inside a think block, suppressing output
+    - "normal": No think block or past it, outputting normally
+
+    Args:
+        chunk: New text chunk from stream
+        buffer: Buffered text (for detection/partial tag handling)
+        state: Current state ("detecting", "in_think", or "normal")
+
+    Returns:
+        Tuple of (text_to_display, new_buffer, new_state)
+    """
+    if state == "normal":
+        # Past any think block, output everything
+        return (chunk, "", "normal")
+
+    text = buffer + chunk
+
+    if state == "detecting":
+        # Check if response starts with think block indicators
+        # Look for <think> or content that ends with </think>
+        if text.startswith('<think>'):
+            # Explicit think block - switch to in_think state
+            return _filter_think_streaming(text[len('<think>'):], "", "in_think")
+
+        # Check if there's a </think> without <think> (missing opening tag)
+        close_idx = text.find('</think>')
+        if close_idx != -1:
+            # Found </think> - everything before was think content
+            output = text[close_idx + len('</think>'):]
+            return (output, "", "normal")
+
+        # Check for partial <think> or </think> at start/end
+        # that might complete in next chunk
+        for prefix in ['<', '<t', '<th', '<thi', '<thin', '<think']:
+            if text.startswith(prefix) and len(text) <= len('<think>'):
+                # Could be start of <think>, keep buffering
+                return ("", text, "detecting")
+
+        for suffix_len in range(1, min(len('</think>'), len(text) + 1)):
+            if text.endswith('</think>'[:suffix_len]):
+                # Could be partial </think>, keep buffering
+                return ("", text, "detecting")
+
+        # No think block detected - output buffered content and switch to normal
+        return (text, "", "normal")
+
+    # state == "in_think"
+    # Look for closing </think> tag
+    close_idx = text.find('</think>')
+    if close_idx != -1:
+        # Found closing tag - output everything after it
+        output = text[close_idx + len('</think>'):]
+        return (output, "", "normal")
+
+    # Check for partial </think> at end
+    for suffix_len in range(1, min(len('</think>'), len(text) + 1)):
+        if text.endswith('</think>'[:suffix_len]):
+            # Potential partial tag, buffer just that part
+            return ("", text[-(suffix_len):], "in_think")
+
+    # Still in think block, suppress everything
+    return ("", "", "in_think")
+
 
 async def stream_agent_interaction(
     user_input: str,
@@ -56,6 +132,8 @@ async def _stream_agent(
     """Stream the agent execution and return response."""
 
     response_text = ""
+    think_buffer = ""
+    think_state = "detecting"
 
     # Stream the agent execution with message history
     async with rag_agent.iter(
@@ -72,6 +150,10 @@ async def _stream_agent(
 
             # Handle model request node - stream the thinking process
             elif Agent.is_model_request_node(node):
+                # Reset think state for each new model request
+                think_buffer = ""
+                think_state = "detecting"
+
                 # Show assistant prefix at the start
                 console.print("[bold blue]Assistant:[/bold blue] ", end="")
 
@@ -82,14 +164,24 @@ async def _stream_agent(
                         if isinstance(event, PartStartEvent) and event.part.part_kind == 'text':
                             initial_text = event.part.content
                             if initial_text:
-                                console.print(initial_text, end="")
+                                # Process text through think block filter
+                                filtered, think_buffer, think_state = _filter_think_streaming(
+                                    initial_text, think_buffer, think_state
+                                )
+                                if filtered:
+                                    console.print(filtered, end="")
                                 response_text += initial_text
 
                         # Handle text delta events for streaming
                         elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
                             delta_text = event.delta.content_delta
                             if delta_text:
-                                console.print(delta_text, end="")
+                                # Process text through think block filter
+                                filtered, think_buffer, think_state = _filter_think_streaming(
+                                    delta_text, think_buffer, think_state
+                                )
+                                if filtered:
+                                    console.print(filtered, end="")
                                 response_text += delta_text
 
                 # New line after streaming completes

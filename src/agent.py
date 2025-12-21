@@ -87,7 +87,16 @@ async def search_knowledge_base(
         response_parts = [f"Found {len(results)} relevant documents:\n"]
 
         for i, result in enumerate(results, 1):
-            response_parts.append(f"\n--- Document {i}: {result.document_title} (relevance: {result.similarity:.2f}) ---")
+            # Format page info if available
+            page_info = ""
+            page_numbers = result.metadata.get("page_numbers")
+            if page_numbers:
+                if len(page_numbers) == 1:
+                    page_info = f", page {page_numbers[0]}"
+                else:
+                    page_info = f", pages {page_numbers[0]}-{page_numbers[-1]}"
+
+            response_parts.append(f"\n--- Document {i}: {result.document_title}{page_info} (relevance: {result.similarity:.2f}) ---")
             response_parts.append(result.content)
 
         return "\n".join(response_parts)

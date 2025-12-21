@@ -154,12 +154,26 @@ class DoclingHybridChunker:
                 # Count actual tokens
                 token_count = len(self.tokenizer.encode(contextualized_text))
 
+                # Extract page numbers from Docling provenance
+                page_numbers = set()
+                if hasattr(chunk, 'meta') and chunk.meta:
+                    doc_items = getattr(chunk.meta, 'doc_items', None)
+                    if doc_items:
+                        for doc_item in doc_items:
+                            prov = getattr(doc_item, 'prov', None)
+                            if prov:
+                                for prov_item in prov:
+                                    page_no = getattr(prov_item, 'page_no', None)
+                                    if page_no is not None:
+                                        page_numbers.add(page_no)
+
                 # Create chunk metadata
                 chunk_metadata = {
                     **base_metadata,
                     "total_chunks": len(chunks),
                     "token_count": token_count,
-                    "has_context": True  # Flag indicating contextualized chunk
+                    "has_context": True,  # Flag indicating contextualized chunk
+                    "page_numbers": sorted(page_numbers) if page_numbers else None,
                 }
 
                 # Estimate character positions

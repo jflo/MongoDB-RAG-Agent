@@ -89,12 +89,23 @@ async def search_knowledge_base(
                 title = result.get('document_title', 'Unknown')
                 content = result.get('content', '')
                 similarity = result.get('combined_score', result.get('similarity', 0))
+                metadata = result.get('metadata', {})
             else:
                 title = result.document_title
                 content = result.content
                 similarity = result.similarity
+                metadata = getattr(result, 'metadata', {}) or {}
 
-            response_parts.append(f"\n--- Document {i}: {title} (relevance: {similarity:.2f}) ---")
+            # Format page info if available
+            page_info = ""
+            page_numbers = metadata.get("page_numbers")
+            if page_numbers:
+                if len(page_numbers) == 1:
+                    page_info = f", page {page_numbers[0]}"
+                else:
+                    page_info = f", pages {page_numbers[0]}-{page_numbers[-1]}"
+
+            response_parts.append(f"\n--- Document {i}: {title}{page_info} (relevance: {similarity:.2f}) ---")
             response_parts.append(content)
 
         return "\n".join(response_parts)
