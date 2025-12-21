@@ -3,7 +3,7 @@ Document embedding generation for vector search.
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -24,6 +24,15 @@ embedding_client = openai.AsyncOpenAI(
     base_url=settings.embedding_base_url
 )
 EMBEDDING_MODEL = settings.embedding_model
+EMBEDDING_DIMENSION = settings.embedding_dimension
+
+# Models that support the 'dimensions' parameter for reduced embeddings.
+# Add new models here when using embedding providers that support configurable dimensions.
+# If your model supports dimensions but isn't listed, add it to this set.
+DIMENSION_CONFIGURABLE_MODELS = {
+    "text-embedding-3-small",
+    "text-embedding-3-large",
+}
 
 
 class EmbeddingGenerator:
@@ -32,6 +41,7 @@ class EmbeddingGenerator:
     def __init__(
         self,
         model: str = EMBEDDING_MODEL,
+        dimension: int = EMBEDDING_DIMENSION,
         batch_size: int = 100
     ):
         """
@@ -39,22 +49,18 @@ class EmbeddingGenerator:
 
         Args:
             model: Embedding model to use
+            dimension: Embedding vector dimension (for models that support it)
             batch_size: Number of texts to process in parallel
         """
         self.model = model
+        self.dimension = dimension
         self.batch_size = batch_size
 
-        # Model-specific configurations
-        self.model_configs = {
-            "text-embedding-3-small": {"dimensions": 1536, "max_tokens": 8191},
-            "text-embedding-3-large": {"dimensions": 3072, "max_tokens": 8191},
-            "text-embedding-ada-002": {"dimensions": 1536, "max_tokens": 8191}
-        }
+        # Check if model supports configurable dimensions
+        self.supports_dimension_param = model in DIMENSION_CONFIGURABLE_MODELS
 
-        self.config = self.model_configs.get(
-            model,
-            {"dimensions": 1536, "max_tokens": 8191}
-        )
+        # Max tokens per model (for truncation)
+        self.max_tokens = 8191  # Default for OpenAI models
 
     async def generate_embedding(self, text: str) -> List[float]:
         """
@@ -67,13 +73,20 @@ class EmbeddingGenerator:
             Embedding vector
         """
         # Truncate text if too long (rough estimation: 4 chars per token)
-        if len(text) > self.config["max_tokens"] * 4:
-            text = text[:self.config["max_tokens"] * 4]
+        if len(text) > self.max_tokens * 4:
+            text = text[:self.max_tokens * 4]
 
-        response = await embedding_client.embeddings.create(
-            model=self.model,
-            input=text
-        )
+        # Build API call kwargs
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "input": text,
+        }
+
+        # Add dimensions parameter for models that support it
+        if self.supports_dimension_param:
+            kwargs["dimensions"] = self.dimension
+
+        response = await embedding_client.embeddings.create(**kwargs)
 
         return response.data[0].embedding
 
@@ -93,14 +106,21 @@ class EmbeddingGenerator:
         # Truncate texts if too long
         processed_texts = []
         for text in texts:
-            if len(text) > self.config["max_tokens"] * 4:
-                text = text[:self.config["max_tokens"] * 4]
+            if len(text) > self.max_tokens * 4:
+                text = text[:self.max_tokens * 4]
             processed_texts.append(text)
 
-        response = await embedding_client.embeddings.create(
-            model=self.model,
-            input=processed_texts
-        )
+        # Build API call kwargs
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "input": processed_texts,
+        }
+
+        # Add dimensions parameter for models that support it
+        if self.supports_dimension_param:
+            kwargs["dimensions"] = self.dimension
+
+        response = await embedding_client.embeddings.create(**kwargs)
 
         return [data.embedding for data in response.data]
 
@@ -176,7 +196,7 @@ class EmbeddingGenerator:
 
     def get_embedding_dimension(self) -> int:
         """Get the dimension of embeddings for this model."""
-        return self.config["dimensions"]
+        return self.dimension
 
 
 def create_embedder(model: str = EMBEDDING_MODEL, **kwargs) -> EmbeddingGenerator:
