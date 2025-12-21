@@ -88,6 +88,27 @@ class Settings(BaseSettings):
         default=0.3, description="Default text weight for hybrid search (0-1)"
     )
 
+    # Slack Bot Configuration (Socket Mode)
+    slack_bot_token: str = Field(
+        default="",
+        description="Slack Bot OAuth Token (xoxb-...)"
+    )
+
+    slack_app_token: str = Field(
+        default="",
+        description="Slack App Token for Socket Mode (xapp-...)"
+    )
+
+    slack_signing_secret: str = Field(
+        default="",
+        description="Slack signing secret for request verification"
+    )
+
+    mongodb_collection_conversations: str = Field(
+        default="conversations",
+        description="MongoDB collection for Slack conversation history"
+    )
+
 
 def load_settings() -> Settings:
     """Load settings with proper error handling."""
