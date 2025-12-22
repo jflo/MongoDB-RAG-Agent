@@ -12,11 +12,10 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from pydantic_ai.ag_ui import StateDeps
 
-from src.agent import rag_agent, RAGState
+from src.agent import RAGState
 from src.settings import load_settings
 from src.conversation_store import ConversationStore
-from src.response_filter import filter_response
-from src.errors import format_error_for_slack, is_retryable_error
+from src.agent_runner import run_agent
 
 # Configure logging
 logging.basicConfig(
@@ -72,7 +71,6 @@ async def handle_mention(event: dict, say) -> None:
     channel_id = event["channel"]
     user_id = event["user"]
     text = event["text"]
-    thread_ts = event.get("thread_ts") or event["ts"]
 
     logger.info(f"Received mention from {user_id} in {channel_id}: {text[:50]}...")
 
@@ -81,55 +79,39 @@ async def handle_mention(event: dict, say) -> None:
 
     if not query:
         await say(
-            text="Hello! Ask me anything about the knowledge base.",
-            thread_ts=thread_ts
+            text="Hello! Ask me anything about the knowledge base."
         )
         return
 
-    try:
-        # Get conversation history for context
-        message_history = await conversation_store.get_history(channel_id, user_id)
-        logger.debug(f"Retrieved {len(message_history)} messages from history")
+    # Get conversation history for context
+    message_history = await conversation_store.get_history(channel_id, user_id)
+    logger.debug(f"Retrieved {len(message_history)} messages from history")
 
-        # Create agent state and deps
-        state = RAGState()
-        deps = StateDeps[RAGState](state=state)
+    # Create agent state and deps
+    state = RAGState()
+    deps = StateDeps[RAGState](state=state)
 
-        # Run agent (non-streaming for Slack)
-        result = await rag_agent.run(
-            query,
-            deps=deps,
-            message_history=message_history
-        )
+    # Run agent using shared runner
+    result = await run_agent(
+        user_input=query,
+        deps=deps,
+        message_history=message_history
+    )
 
-        # Get and clean response (filter think blocks and tool artifacts)
-        response = result.output if hasattr(result, "output") else str(result)
-        response = filter_response(response)
+    # Handle errors
+    if result.error:
+        await say(text=result.error)
+        return
 
-        if not response:
-            response = "I processed your request but have no response to share."
+    # Save updated conversation history
+    await conversation_store.save_messages(channel_id, user_id, result.new_messages)
 
-        # Save updated conversation history
-        new_messages = result.new_messages()
-        await conversation_store.save_messages(channel_id, user_id, new_messages)
+    # Periodically trim history to prevent unbounded growth
+    await conversation_store.trim_history(channel_id, user_id, keep_count=50)
 
-        # Periodically trim history to prevent unbounded growth
-        await conversation_store.trim_history(channel_id, user_id, keep_count=50)
-
-        # Reply in thread
-        await say(text=response, thread_ts=thread_ts)
-        logger.info(f"Replied to {user_id} in thread {thread_ts}")
-
-    except Exception as e:
-        logger.exception(f"Error processing Slack message: {e}")
-
-        # Provide user-friendly error message
-        error_msg = format_error_for_slack(e)
-
-        if is_retryable_error(e):
-            error_msg += "\n\n_This error may be temporary. Please try again in a moment._"
-
-        await say(text=error_msg, thread_ts=thread_ts)
+    # Reply in thread
+    await say(markdown_text=result.response)
+    logger.info(f"Replied to {user_id}")
 
 
 @app.event("message")

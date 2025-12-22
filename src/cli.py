@@ -8,16 +8,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from pydantic_ai import Agent
-from pydantic_ai.messages import PartDeltaEvent, PartStartEvent, TextPartDelta
 from pydantic_ai.ag_ui import StateDeps
 from dotenv import load_dotenv
 
-# Import our agent and dependencies
-from src.agent import rag_agent, RAGState
+from src.agent import RAGState
 from src.settings import load_settings
-from src.response_filter import filter_think_streaming
-from src.errors import format_error_for_cli, is_retryable_error
+from src.agent_runner import stream_agent
 
 # Load environment variables
 load_dotenv(override=True)
@@ -31,7 +27,7 @@ async def stream_agent_interaction(
     deps: StateDeps[RAGState]
 ) -> tuple[str, List]:
     """
-    Stream agent interaction with real-time tool call display.
+    Stream agent interaction with real-time output to Rich console.
 
     Args:
         user_input: The user's input text
@@ -39,109 +35,37 @@ async def stream_agent_interaction(
         deps: StateDeps with RAG state
 
     Returns:
-        Tuple of (streamed_text, updated_message_history)
+        Tuple of (response_text, new_messages)
     """
-    try:
-        return await _stream_agent(user_input, deps, message_history)
-    except Exception as e:
-        # Provide user-friendly error messages for LLM connection issues
-        error_msg = format_error_for_cli(e)
-        console.print(f"\n{error_msg}")
+    # Track if we've printed the prefix yet
+    prefix_printed = False
 
-        if is_retryable_error(e):
-            console.print("[yellow]This error may be temporary. Try again in a moment.[/yellow]")
+    def on_chunk(text: str) -> None:
+        """Handle each streamed text chunk."""
+        nonlocal prefix_printed
+        if not prefix_printed:
+            console.print("[bold blue]Assistant:[/bold blue] ", end="")
+            prefix_printed = True
+        console.print(text, end="")
 
+    result = await stream_agent(
+        user_input=user_input,
+        deps=deps,
+        message_history=message_history,
+        on_chunk=on_chunk,
+    )
+
+    # Print newline after streaming completes
+    if prefix_printed:
+        console.print()
+
+    # Handle errors
+    if result.error:
+        console.print(f"\n[red]{result.error}[/red]")
+        console.print("[yellow]This error may be temporary. Try again in a moment.[/yellow]")
         return ("", [])
 
-
-async def _stream_agent(
-    user_input: str,
-    deps: StateDeps[RAGState],
-    message_history: List
-) -> tuple[str, List]:
-    """Stream the agent execution and return response."""
-
-    response_text = ""
-    think_buffer = ""
-    think_state = "buffering"
-
-    # Stream the agent execution with message history
-    async with rag_agent.iter(
-        user_input,
-        deps=deps,
-        message_history=message_history
-    ) as run:
-
-        async for node in run:
-
-            # Handle user prompt node
-            if Agent.is_user_prompt_node(node):
-                pass  # Clean start
-
-            # Handle model request node - stream the thinking process
-            elif Agent.is_model_request_node(node):
-                # Reset think state for each new model request
-                think_buffer = ""
-                think_state = "buffering"
-
-                # Show assistant prefix at the start
-                console.print("[bold blue]Assistant:[/bold blue] ", end="")
-
-                # Stream model request events for real-time text
-                async with node.stream(run.ctx) as request_stream:
-                    async for event in request_stream:
-                        # Handle text part start events
-                        if isinstance(event, PartStartEvent) and event.part.part_kind == 'text':
-                            initial_text = event.part.content
-                            if initial_text:
-                                # Process text through think block filter
-                                filtered, think_buffer, think_state = filter_think_streaming(
-                                    initial_text, think_buffer, think_state
-                                )
-                                if filtered:
-                                    console.print(filtered, end="")
-                                response_text += initial_text
-
-                        # Handle text delta events for streaming
-                        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-                            delta_text = event.delta.content_delta
-                            if delta_text:
-                                # Process text through think block filter
-                                filtered, think_buffer, think_state = filter_think_streaming(
-                                    delta_text, think_buffer, think_state
-                                )
-                                if filtered:
-                                    console.print(filtered, end="")
-                                response_text += delta_text
-
-                # Flush any remaining buffered content (no </think> found)
-                if think_buffer and think_state == "buffering":
-                    console.print(think_buffer, end="")
-                    think_buffer = ""
-                    think_state = "normal"
-
-                # New line after streaming completes
-                console.print()
-
-            # Handle tool calls silently (execute but don't display)
-            elif Agent.is_call_tools_node(node):
-                async with node.stream(run.ctx) as tool_stream:
-                    async for _ in tool_stream:
-                        pass  # Execute tool calls silently
-
-            # Handle end node
-            elif Agent.is_end_node(node):
-                pass
-
-    # Get new messages from this run to add to history
-    new_messages = run.result.new_messages()
-
-    # Get final output
-    final_output = run.result.output if hasattr(run.result, 'output') else str(run.result)
-    response = response_text.strip() or final_output
-
-    # Return both streamed text and new messages
-    return (response, new_messages)
+    return (result.response, result.new_messages)
 
 
 def display_welcome():
