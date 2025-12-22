@@ -15,6 +15,7 @@ from pydantic_ai.ag_ui import StateDeps
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings
 from src.conversation_store import ConversationStore
+from src.response_filter import filter_response
 
 # Configure logging
 logging.basicConfig(
@@ -56,26 +57,6 @@ def _extract_query(text: str) -> str:
     """
     # Remove <@UXXXXX> mention patterns
     return re.sub(r"<@U[A-Z0-9]+>", "", text).strip()
-
-
-def _filter_think_content(text: str) -> str:
-    """
-    Filter out think blocks from response.
-
-    Args:
-        text: Raw response that may contain <think>...</think> blocks
-
-    Returns:
-        Text with think blocks removed
-    """
-    # Remove think blocks including newlines after
-    filtered = re.sub(r"<think>[\s\S]*?</think>\s*", "", text)
-    # Also handle case where there's no opening tag but closing exists
-    if "</think>" in filtered:
-        # Find closing tag and remove everything before it
-        idx = filtered.find("</think>")
-        filtered = filtered[idx + len("</think>"):].strip()
-    return filtered.strip()
 
 
 @app.event("app_mention")
@@ -120,9 +101,9 @@ async def handle_mention(event: dict, say) -> None:
             message_history=message_history
         )
 
-        # Get and clean response
+        # Get and clean response (filter think blocks and tool artifacts)
         response = result.output if hasattr(result, "output") else str(result)
-        response = _filter_think_content(response)
+        response = filter_response(response)
 
         if not response:
             response = "I processed your request but have no response to share."

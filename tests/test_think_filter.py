@@ -1,11 +1,11 @@
 """Tests for think block filtering in CLI streaming."""
 
 import pytest
-from src.cli import _filter_think_streaming
+from src.response_filter import filter_think_streaming, filter_think_content, filter_response
 
 
 class TestThinkBlockFilter:
-    """Test cases for _filter_think_streaming function."""
+    """Test cases for filter_think_streaming function."""
 
     def test_normal_text_no_think_block(self):
         """Normal text without any think block should be output after buffer threshold."""
@@ -17,7 +17,7 @@ class TestThinkBlockFilter:
         chunks = ["Hello, ", "this is ", "a normal ", "response ", "without ", "any ", "think ", "blocks."]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -44,7 +44,7 @@ class TestThinkBlockFilter:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -72,7 +72,7 @@ class TestThinkBlockFilter:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -99,7 +99,7 @@ class TestThinkBlockFilter:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -112,7 +112,7 @@ class TestThinkBlockFilter:
     def test_partial_tag_at_end_keeps_buffering(self):
         """Partial </think> at end should keep buffering."""
         chunk = "Some content</th"
-        filtered, buffer, state = _filter_think_streaming(chunk, "", "buffering")
+        filtered, buffer, state = filter_think_streaming(chunk, "", "buffering")
 
         # Should keep buffering due to potential partial tag
         assert state == "buffering"
@@ -122,7 +122,7 @@ class TestThinkBlockFilter:
     def test_long_content_without_think_stays_buffering(self):
         """Content without </think> stays buffering until stream ends."""
         long_content = "A" * 600
-        filtered, buffer, state = _filter_think_streaming(long_content, "", "buffering")
+        filtered, buffer, state = filter_think_streaming(long_content, "", "buffering")
 
         # Should keep buffering - flush happens at end of stream
         assert state == "buffering"
@@ -131,7 +131,7 @@ class TestThinkBlockFilter:
 
     def test_normal_state_passes_through(self):
         """Once in normal state, all content passes through."""
-        filtered, buffer, state = _filter_think_streaming("any content", "", "normal")
+        filtered, buffer, state = filter_think_streaming("any content", "", "normal")
 
         assert state == "normal"
         assert filtered == "any content"
@@ -150,7 +150,7 @@ class TestThinkBlockFilter:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -192,7 +192,7 @@ class TestThinkBlockFilter:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -210,7 +210,7 @@ class TestEdgeCases:
 
     def test_empty_chunk(self):
         """Empty chunk should not break the filter."""
-        filtered, buffer, state = _filter_think_streaming("", "existing", "buffering")
+        filtered, buffer, state = filter_think_streaming("", "existing", "buffering")
         assert buffer == "existing"
         assert state == "buffering"
 
@@ -223,7 +223,7 @@ class TestEdgeCases:
         chunks = ["<think>", "Only thinking, no response", "</think>"]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -247,7 +247,7 @@ class TestEdgeCases:
         ]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -261,7 +261,7 @@ class TestEdgeCases:
     def test_angle_bracket_in_normal_text(self):
         """Angle brackets in normal text shouldn't cause issues once in normal state."""
         # In normal state, angle brackets pass through
-        filtered, buffer, state = _filter_think_streaming(" x < y and y > z", "", "normal")
+        filtered, buffer, state = filter_think_streaming(" x < y and y > z", "", "normal")
         assert filtered == " x < y and y > z"
         assert state == "normal"
 
@@ -280,7 +280,7 @@ class TestEdgeCases:
         chunks = [think_content, "</think>", "Actual response"]
 
         for chunk in chunks:
-            filtered, buffer, state = _filter_think_streaming(chunk, buffer, state)
+            filtered, buffer, state = filter_think_streaming(chunk, buffer, state)
             if filtered:
                 output_parts.append(filtered)
 
@@ -292,3 +292,40 @@ class TestEdgeCases:
         # it will output the 600 A's before seeing </think>
         assert result == "Actual response", f"Got: {result[:100]}..."
         assert "AAAA" not in result
+
+
+class TestToolArtifactFilter:
+    """Test cases for tool artifact filtering."""
+
+    def test_filter_response_removes_think_and_tools(self):
+        """filter_response should remove both think blocks and tool artifacts."""
+        text = '<think>Let me think</think>Here is the answer.'
+        result = filter_response(text)
+        assert result == "Here is the answer."
+
+    def test_filter_tool_json_artifacts(self):
+        """JSON tool call syntax should be removed."""
+        text = 'I will search. {"tool": "search", "args": {"query": "test"}} Found results.'
+        result = filter_response(text)
+        assert '{"tool"' not in result
+        assert "Found results" in result
+
+    def test_filter_tool_result_markers(self):
+        """Tool result markers should be removed."""
+        text = 'Searching... [Tool Result: Found 5 documents] Here are the results.'
+        result = filter_response(text)
+        assert "[Tool Result" not in result
+        assert "Here are the results" in result
+
+    def test_clean_text_unchanged(self):
+        """Clean text should pass through unchanged."""
+        text = "This is a normal response with no special content."
+        result = filter_response(text)
+        assert result == text
+
+    def test_batch_think_filter(self):
+        """filter_think_content should work on complete text."""
+        text = "<think>Internal thoughts</think>External response."
+        result = filter_think_content(text)
+        assert result == "External response."
+        assert "Internal" not in result

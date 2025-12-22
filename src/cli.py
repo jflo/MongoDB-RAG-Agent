@@ -16,63 +16,12 @@ from dotenv import load_dotenv
 # Import our agent and dependencies
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings
+from src.response_filter import filter_think_streaming
 
 # Load environment variables
 load_dotenv(override=True)
 
 console = Console()
-
-def _filter_think_streaming(
-    chunk: str,
-    buffer: str,
-    state: str
-) -> tuple[str, str, str]:
-    """
-    Filter think blocks during streaming.
-
-    Strategy: Buffer all content until we see </think>. Content is only
-    released when </think> is found (discarding think content) or when
-    streaming ends (flush releases buffer as normal content).
-
-    Models may omit the opening <think> tag but still include </think>.
-
-    States:
-    - "buffering": Collecting content, looking for </think>
-    - "normal": Past any think block, outputting normally
-
-    Args:
-        chunk: New text chunk from stream
-        buffer: Buffered text
-        state: Current state ("buffering" or "normal")
-
-    Returns:
-        Tuple of (text_to_display, new_buffer, new_state)
-    """
-    if state == "normal":
-        # Past any think block, output everything directly
-        return (chunk, "", "normal")
-
-    # state == "buffering"
-    text = buffer + chunk
-
-    # Check for </think> tag
-    close_idx = text.find('</think>')
-    if close_idx != -1:
-        # Found closing tag - discard everything before it (think content)
-        # Output everything after it
-        output = text[close_idx + len('</think>'):]
-        return (output, "", "normal")
-
-    # Check for partial </think> at end that might complete in next chunk
-    for suffix_len in range(1, len('</think>')):
-        potential_suffix = '</think>'[:suffix_len]
-        if text.endswith(potential_suffix):
-            # Keep buffering - might be partial tag
-            return ("", text, "buffering")
-
-    # No </think> found - keep buffering
-    # The buffer will be flushed at end of streaming if no </think> is found
-    return ("", text, "buffering")
 
 
 async def stream_agent_interaction(
@@ -141,7 +90,7 @@ async def _stream_agent(
                             initial_text = event.part.content
                             if initial_text:
                                 # Process text through think block filter
-                                filtered, think_buffer, think_state = _filter_think_streaming(
+                                filtered, think_buffer, think_state = filter_think_streaming(
                                     initial_text, think_buffer, think_state
                                 )
                                 if filtered:
@@ -153,7 +102,7 @@ async def _stream_agent(
                             delta_text = event.delta.content_delta
                             if delta_text:
                                 # Process text through think block filter
-                                filtered, think_buffer, think_state = _filter_think_streaming(
+                                filtered, think_buffer, think_state = filter_think_streaming(
                                     delta_text, think_buffer, think_state
                                 )
                                 if filtered:
@@ -169,54 +118,11 @@ async def _stream_agent(
                 # New line after streaming completes
                 console.print()
 
-            # Handle tool calls
+            # Handle tool calls silently (execute but don't display)
             elif Agent.is_call_tools_node(node):
-                # Stream tool execution events
                 async with node.stream(run.ctx) as tool_stream:
-                    async for event in tool_stream:
-                        event_type = type(event).__name__
-
-                        if event_type == "FunctionToolCallEvent":
-                            # Extract tool name from the event
-                            tool_name = "Unknown Tool"
-                            args = None
-
-                            # Check if the part attribute contains the tool call
-                            if hasattr(event, 'part'):
-                                part = event.part
-
-                                # Check for tool name
-                                if hasattr(part, 'tool_name'):
-                                    tool_name = part.tool_name
-                                elif hasattr(part, 'function_name'):
-                                    tool_name = part.function_name
-                                elif hasattr(part, 'name'):
-                                    tool_name = part.name
-
-                                # Check for arguments
-                                if hasattr(part, 'args'):
-                                    args = part.args
-                                elif hasattr(part, 'arguments'):
-                                    args = part.arguments
-
-                            console.print(f"  [cyan]Calling tool:[/cyan] [bold]{tool_name}[/bold]")
-
-                            # Show search query if it's a search tool
-                            if args and isinstance(args, dict):
-                                if 'query' in args:
-                                    console.print(f"    [dim]Query:[/dim] {args['query']}")
-                                if 'search_type' in args:
-                                    console.print(f"    [dim]Type:[/dim] {args['search_type']}")
-                                if 'match_count' in args:
-                                    console.print(f"    [dim]Results:[/dim] {args['match_count']}")
-                            elif args:
-                                args_str = str(args)
-                                if len(args_str) > 100:
-                                    args_str = args_str[:97] + "..."
-                                console.print(f"    [dim]Args: {args_str}[/dim]")
-
-                        elif event_type == "FunctionToolResultEvent":
-                            console.print(f"  [green]Search completed successfully[/green]")
+                    async for _ in tool_stream:
+                        pass  # Execute tool calls silently
 
             # Handle end node
             elif Agent.is_end_node(node):
