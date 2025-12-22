@@ -1,6 +1,7 @@
 """Response filtering utilities for think blocks and tool use.
 
 Provides both streaming and batch filtering for use by CLI and Slack interfaces.
+Also provides Markdown to Slack mrkdwn conversion.
 """
 
 import re
@@ -139,4 +140,104 @@ def filter_response(text: str) -> str:
     """
     result = filter_think_content(text)
     result = filter_tool_artifacts(result)
+    return result
+
+
+def markdown_to_slack(text: str) -> str:
+    """
+    Convert Markdown formatting to Slack mrkdwn format.
+
+    Slack uses its own markup format that differs from Markdown:
+    - Bold: **text** or __text__ -> *text*
+    - Italic: *text* or _text_ -> _text_
+    - Strikethrough: ~~text~~ -> ~text~
+    - Code: `code` -> `code` (same)
+    - Code blocks: ```code``` -> ```code``` (same)
+    - Links: [text](url) -> <url|text>
+    - Headers: # Header -> *Header*
+
+    Args:
+        text: Text with Markdown formatting
+
+    Returns:
+        Text with Slack mrkdwn formatting
+    """
+    result = text
+
+    # Protect code blocks from other transformations
+    code_blocks = []
+    def save_code_block(match):
+        code_blocks.append(match.group(0))
+        return f"\x00CODE_BLOCK_{len(code_blocks) - 1}\x00"
+
+    result = re.sub(r'```[\s\S]*?```', save_code_block, result)
+
+    # Protect inline code
+    inline_codes = []
+    def save_inline_code(match):
+        inline_codes.append(match.group(0))
+        return f"\x00INLINE_CODE_{len(inline_codes) - 1}\x00"
+
+    result = re.sub(r'`[^`]+`', save_inline_code, result)
+
+    # Convert links: [text](url) -> <url|text>
+    result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', result)
+
+    # Placeholders for bold text (to avoid italic conversion later)
+    BOLD_START = "\x01BOLD_START\x01"
+    BOLD_END = "\x01BOLD_END\x01"
+
+    # Convert headers: # Header -> *Header* (bold)
+    # Handle multiple header levels - use placeholder to avoid italic conversion
+    def header_to_bold(match):
+        return f"{BOLD_START}{match.group(1)}{BOLD_END}"
+    result = re.sub(r'^#{1,6}\s+(.+)$', header_to_bold, result, flags=re.MULTILINE)
+
+    # Convert bold: **text** or __text__ -> placeholder (to avoid italic conversion)
+    def bold_to_placeholder(match):
+        return f"{BOLD_START}{match.group(1)}{BOLD_END}"
+    result = re.sub(r'\*\*([^*]+)\*\*', bold_to_placeholder, result)
+    result = re.sub(r'__([^_]+)__', bold_to_placeholder, result)
+
+    # Convert bullet lists BEFORE italic conversion to prevent * item -> _item_
+    result = re.sub(r'^-\s+', '• ', result, flags=re.MULTILINE)
+    result = re.sub(r'^\*\s+', '• ', result, flags=re.MULTILINE)
+
+    # Convert italic: *text* -> _text_
+    # Only match single asterisks not at start of line (bullets already handled)
+    result = re.sub(r'(?<!\*)\*([^*\x01]+)\*(?!\*)', r'_\1_', result)
+
+    # Convert strikethrough: ~~text~~ -> ~text~
+    result = re.sub(r'~~([^~]+)~~', r'~\1~', result)
+
+    # Restore bold placeholders to Slack bold syntax
+    result = result.replace(BOLD_START, '*')
+    result = result.replace(BOLD_END, '*')
+
+    # Restore inline code
+    for i, code in enumerate(inline_codes):
+        result = result.replace(f"\x00INLINE_CODE_{i}\x00", code)
+
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        result = result.replace(f"\x00CODE_BLOCK_{i}\x00", block)
+
+    return result
+
+
+def filter_response_for_slack(text: str) -> str:
+    """
+    Apply all response filters and convert to Slack format.
+
+    Combines think block filtering, tool artifact filtering,
+    and Markdown to Slack mrkdwn conversion.
+
+    Args:
+        text: Raw response text with Markdown
+
+    Returns:
+        Cleaned text formatted for Slack
+    """
+    result = filter_response(text)
+    result = markdown_to_slack(result)
     return result

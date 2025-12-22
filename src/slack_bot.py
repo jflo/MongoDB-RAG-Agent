@@ -15,7 +15,7 @@ from pydantic_ai.ag_ui import StateDeps
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings
 from src.conversation_store import ConversationStore
-from src.response_filter import filter_response
+from src.response_filter import filter_response_for_slack
 from src.errors import format_error_for_slack, is_retryable_error
 
 # Configure logging
@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 # Load settings
 settings = load_settings()
+
+# Log LLM configuration for debugging
+logger.info(f"LLM configured: model={settings.llm_model}, base_url={settings.llm_base_url}")
 
 # Validate Slack configuration
 if not settings.slack_bot_token or not settings.slack_app_token:
@@ -72,7 +75,6 @@ async def handle_mention(event: dict, say) -> None:
     channel_id = event["channel"]
     user_id = event["user"]
     text = event["text"]
-    thread_ts = event.get("thread_ts") or event["ts"]
 
     logger.info(f"Received mention from {user_id} in {channel_id}: {text[:50]}...")
 
@@ -80,20 +82,19 @@ async def handle_mention(event: dict, say) -> None:
     query = _extract_query(text)
 
     if not query:
-        await say(
-            text="Hello! Ask me anything about the knowledge base.",
-            thread_ts=thread_ts
-        )
+        await say(text="Hello! Ask me anything about the knowledge base.")
         return
 
     try:
         # Get conversation history for context
         message_history = await conversation_store.get_history(channel_id, user_id)
-        logger.debug(f"Retrieved {len(message_history)} messages from history")
+        logger.info(f"Retrieved {len(message_history)} messages from history")
 
         # Create agent state and deps
         state = RAGState()
         deps = StateDeps[RAGState](state=state)
+
+        logger.info(f"Calling LLM agent with query: {query[:100]}...")
 
         # Run agent (non-streaming for Slack)
         result = await rag_agent.run(
@@ -102,9 +103,11 @@ async def handle_mention(event: dict, say) -> None:
             message_history=message_history
         )
 
+        logger.info("LLM agent call completed successfully")
+
         # Get and clean response (filter think blocks and tool artifacts)
         response = result.output if hasattr(result, "output") else str(result)
-        response = filter_response(response)
+        response = filter_response_for_slack(response)
 
         if not response:
             response = "I processed your request but have no response to share."
@@ -116,9 +119,9 @@ async def handle_mention(event: dict, say) -> None:
         # Periodically trim history to prevent unbounded growth
         await conversation_store.trim_history(channel_id, user_id, keep_count=50)
 
-        # Reply in thread
-        await say(text=response, thread_ts=thread_ts)
-        logger.info(f"Replied to {user_id} in thread {thread_ts}")
+        # Reply in channel
+        await say(text=response)
+        logger.info(f"Replied to {user_id} in channel {channel_id}")
 
     except Exception as e:
         logger.exception(f"Error processing Slack message: {e}")
@@ -129,7 +132,7 @@ async def handle_mention(event: dict, say) -> None:
         if is_retryable_error(e):
             error_msg += "\n\n_This error may be temporary. Please try again in a moment._"
 
-        await say(text=error_msg, thread_ts=thread_ts)
+        await say(text=error_msg)
 
 
 @app.event("message")
@@ -140,8 +143,18 @@ async def handle_message(event: dict) -> None:
     Currently a no-op - we only respond to mentions.
     This handler prevents warnings about unhandled events.
     """
-    # Only respond to mentions, not all messages
+    # Log all message events for debugging
+    subtype = event.get("subtype", "normal")
+    text = event.get("text", "")[:50] if event.get("text") else "(no text)"
+    logger.debug(f"Message event received: subtype={subtype}, text={text}...")
     pass
+
+
+@app.event({"type": "event_callback"})
+async def handle_any_event(event: dict) -> None:
+    """Catch-all event handler for debugging."""
+    event_type = event.get("type", "unknown")
+    logger.info(f"Received event: {event_type}")
 
 
 async def initialize_resources() -> None:
@@ -195,6 +208,11 @@ async def main() -> None:
 
         # Start Socket Mode handler
         logger.info("Starting Slack bot in Socket Mode...")
+        logger.info("Make sure your Slack app has:")
+        logger.info("  - Event Subscriptions enabled with 'app_mention' event")
+        logger.info("  - Bot scopes: app_mentions:read, chat:write")
+        logger.info("Waiting for events... (Ctrl+C to quit)")
+
         handler = AsyncSocketModeHandler(app, settings.slack_app_token)
         await handler.start_async()
 
