@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from src.agent import rag_agent, RAGState
 from src.settings import load_settings
 from src.response_filter import filter_think_streaming
+from src.errors import format_error_for_cli, is_retryable_error
 
 # Load environment variables
 load_dotenv(override=True)
@@ -43,9 +44,13 @@ async def stream_agent_interaction(
     try:
         return await _stream_agent(user_input, deps, message_history)
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        import traceback
-        traceback.print_exc()
+        # Provide user-friendly error messages for LLM connection issues
+        error_msg = format_error_for_cli(e)
+        console.print(f"\n{error_msg}")
+
+        if is_retryable_error(e):
+            console.print("[yellow]This error may be temporary. Try again in a moment.[/yellow]")
+
         return ("", [])
 
 

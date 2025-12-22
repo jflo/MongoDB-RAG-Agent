@@ -16,6 +16,7 @@ from src.agent import rag_agent, RAGState
 from src.settings import load_settings
 from src.conversation_store import ConversationStore
 from src.response_filter import filter_response
+from src.errors import format_error_for_slack, is_retryable_error
 
 # Configure logging
 logging.basicConfig(
@@ -121,10 +122,14 @@ async def handle_mention(event: dict, say) -> None:
 
     except Exception as e:
         logger.exception(f"Error processing Slack message: {e}")
-        await say(
-            text=f"Sorry, I encountered an error: {str(e)}",
-            thread_ts=thread_ts
-        )
+
+        # Provide user-friendly error message
+        error_msg = format_error_for_slack(e)
+
+        if is_retryable_error(e):
+            error_msg += "\n\n_This error may be temporary. Please try again in a moment._"
+
+        await say(text=error_msg, thread_ts=thread_ts)
 
 
 @app.event("message")
