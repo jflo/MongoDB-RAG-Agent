@@ -6,7 +6,6 @@ import logging
 import re
 import sys
 
-from pymongo import AsyncMongoClient
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
@@ -14,7 +13,6 @@ from pydantic_ai.ag_ui import StateDeps
 
 from src.agent import RAGState
 from src.settings import load_settings
-from src.conversation_store import ConversationStore
 from src.agent_runner import run_agent
 
 # Configure logging
@@ -40,10 +38,6 @@ app = AsyncApp(
     signing_secret=settings.slack_signing_secret or None
 )
 
-# Global resources (initialized on startup)
-mongo_client: AsyncMongoClient = None
-conversation_store: ConversationStore = None
-
 
 def _extract_query(text: str) -> str:
     """
@@ -60,19 +54,20 @@ def _extract_query(text: str) -> str:
 
 
 @app.event("app_mention")
-async def handle_mention(event: dict, say) -> None:
+async def handle_mention(event: dict, say, client) -> None:
     """
     Handle @mentions of the bot in channels.
 
     Args:
         event: Slack event payload
         say: Function to send messages to channel
+        client: Slack WebClient for API calls
     """
     channel_id = event["channel"]
     user_id = event["user"]
     text = event["text"]
 
-    logger.info(f"Received mention from {user_id} in {channel_id}: {text[:50]}...")
+    logger.info(f"Received mention from {user_id}: {text[:50]}...")
 
     # Extract query from mention
     query = _extract_query(text)
@@ -83,35 +78,44 @@ async def handle_mention(event: dict, say) -> None:
         )
         return
 
-    # Get conversation history for context
-    message_history = await conversation_store.get_history(channel_id, user_id)
-    logger.debug(f"Retrieved {len(message_history)} messages from history")
-
-    # Create agent state and deps
-    state = RAGState()
-    deps = StateDeps[RAGState](state=state)
-
-    # Run agent using shared runner
-    result = await run_agent(
-        user_input=query,
-        deps=deps,
-        message_history=message_history
+    # Post a "thinking" message to show we're processing
+    thinking_msg = await client.chat_postMessage(
+        channel=channel_id,
+        text="_Thinking..._"
     )
+    thinking_ts = thinking_msg["ts"]
 
-    # Handle errors
-    if result.error:
-        await say(text=result.error)
-        return
+    try:
+        # Create agent state and deps
+        state = RAGState()
+        deps = StateDeps[RAGState](state=state)
 
-    # Save updated conversation history
-    await conversation_store.save_messages(channel_id, user_id, result.new_messages)
+        # Run agent with no message history (stateless)
+        result = await run_agent(
+            user_input=query,
+            deps=deps,
+            message_history=[]
+        )
 
-    # Periodically trim history to prevent unbounded growth
-    await conversation_store.trim_history(channel_id, user_id, keep_count=50)
+        # Delete the thinking message
+        await client.chat_delete(channel=channel_id, ts=thinking_ts)
 
-    # Reply in thread
-    await say(markdown_text=result.response)
-    logger.info(f"Replied to {user_id}")
+        # Handle errors
+        if result.error:
+            await say(text=result.error)
+            return
+
+        # Reply
+        await say(markdown_text=result.response)
+        logger.info(f"Replied to {user_id}")
+
+    except Exception as e:
+        # Try to delete thinking message on error
+        try:
+            await client.chat_delete(channel=channel_id, ts=thinking_ts)
+        except Exception:
+            pass
+        raise
 
 
 @app.event("message")
@@ -126,45 +130,6 @@ async def handle_message(event: dict) -> None:
     pass
 
 
-async def initialize_resources() -> None:
-    """Initialize MongoDB connection and conversation store."""
-    global mongo_client, conversation_store
-
-    logger.info("Initializing MongoDB connection...")
-
-    mongo_client = AsyncMongoClient(
-        settings.mongodb_uri,
-        serverSelectionTimeoutMS=5000
-    )
-
-    # Verify connection
-    await mongo_client.admin.command("ping")
-    logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
-
-    # Initialize conversation store
-    db = mongo_client[settings.mongodb_database]
-    collection = db[settings.mongodb_collection_conversations]
-    conversation_store = ConversationStore(collection)
-
-    # Create indexes for efficient queries
-    await collection.create_index([
-        ("channel_id", 1),
-        ("user_id", 1)
-    ], unique=True)
-    await collection.create_index("updated_at")
-
-    logger.info("Conversation store initialized")
-
-
-async def cleanup_resources() -> None:
-    """Clean up resources on shutdown."""
-    global mongo_client
-
-    if mongo_client:
-        await mongo_client.close()
-        logger.info("MongoDB connection closed")
-
-
 async def main() -> None:
     """Run the Slack bot."""
     logger.info("=" * 50)
@@ -172,9 +137,6 @@ async def main() -> None:
     logger.info("=" * 50)
 
     try:
-        # Initialize resources
-        await initialize_resources()
-
         # Start Socket Mode handler
         logger.info("Starting Slack bot in Socket Mode...")
         handler = AsyncSocketModeHandler(app, settings.slack_app_token)
@@ -185,8 +147,6 @@ async def main() -> None:
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
         raise
-    finally:
-        await cleanup_resources()
 
 
 if __name__ == "__main__":
