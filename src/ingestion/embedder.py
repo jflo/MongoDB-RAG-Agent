@@ -32,6 +32,7 @@ EMBEDDING_DIMENSION = settings.embedding_dimension
 DIMENSION_CONFIGURABLE_MODELS = {
     "text-embedding-3-small",
     "text-embedding-3-large",
+    "text-embedding-qwen3-embedding-8b"
 }
 
 

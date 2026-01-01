@@ -27,7 +27,8 @@ class SearchResult(BaseModel):
 async def semantic_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    match_count: Optional[int] = None,
+    source_filter: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform pure semantic search using MongoDB vector similarity.
@@ -36,6 +37,7 @@ async def semantic_search(
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        source_filter: Regex pattern to filter by document source (e.g., "^GRR.*\\.pdf$")
 
     Returns:
         List of search results ordered by similarity
@@ -56,6 +58,11 @@ async def semantic_search(
         # Generate embedding for query (already returns list[float])
         query_embedding = await deps.get_embedding(query)
 
+        # Calculate limit (over-fetch when filtering to compensate for filtered-out results)
+        limit = match_count * 3 if source_filter else match_count
+        # numCandidates must be >= limit, use 10x limit for good recall
+        num_candidates = max(100, limit * 3)
+
         # Build MongoDB aggregation pipeline
         pipeline = [
             {
@@ -63,8 +70,8 @@ async def semantic_search(
                     "index": deps.settings.mongodb_vector_index,
                     "queryVector": query_embedding,
                     "path": "embedding",
-                    "numCandidates": 100,  # Search space (10x limit is good default)
-                    "limit": match_count
+                    "numCandidates": num_candidates,
+                    "limit": limit
                 }
             },
             {
@@ -90,6 +97,14 @@ async def semantic_search(
                 }
             }
         ]
+
+        # Add source filter if specified
+        if source_filter:
+            pipeline.append({
+                "$match": {
+                    "document_source": {"$regex": source_filter}
+                }
+            })
 
         # Execute aggregation
         collection = deps.db[deps.settings.mongodb_collection_chunks]
@@ -131,7 +146,8 @@ async def semantic_search(
 async def text_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    match_count: Optional[int] = None,
+    source_filter: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform full-text search using MongoDB Atlas Search.
@@ -143,6 +159,7 @@ async def text_search(
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        source_filter: Regex pattern to filter by document source (e.g., "^GRR.*\\.pdf$")
 
     Returns:
         List of search results ordered by text relevance
@@ -176,7 +193,7 @@ async def text_search(
                 }
             },
             {
-                "$limit": match_count * 2  # Over-fetch for better RRF results
+                "$limit": match_count * 3 if source_filter else match_count * 2  # Over-fetch when filtering
             },
             {
                 "$lookup": {
@@ -201,6 +218,14 @@ async def text_search(
                 }
             }
         ]
+
+        # Add source filter if specified
+        if source_filter:
+            pipeline.append({
+                "$match": {
+                    "document_source": {"$regex": source_filter}
+                }
+            })
 
         # Execute aggregation
         collection = deps.db[deps.settings.mongodb_collection_chunks]
@@ -317,7 +342,8 @@ async def hybrid_search(
     ctx: RunContext[AgentDependencies],
     query: str,
     match_count: Optional[int] = None,
-    text_weight: Optional[float] = None
+    text_weight: Optional[float] = None,
+    source_filter: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform hybrid search combining semantic and keyword matching.
@@ -330,6 +356,7 @@ async def hybrid_search(
         query: Search query text
         match_count: Number of results to return (default: 10)
         text_weight: Weight for text matching (0-1, not used with RRF)
+        source_filter: Regex pattern to filter by document source (e.g., "^GRR.*\\.pdf$")
 
     Returns:
         List of search results sorted by combined RRF score
@@ -353,12 +380,12 @@ async def hybrid_search(
         # Over-fetch for better RRF results (2x requested count)
         fetch_count = match_count * 2
 
-        logger.info(f"hybrid_search starting: query='{query}', match_count={match_count}")
+        logger.info(f"hybrid_search starting: query='{query}', match_count={match_count}, source_filter={source_filter}")
 
         # Run both searches concurrently for performance
         semantic_results, text_results = await asyncio.gather(
-            semantic_search(ctx, query, fetch_count),
-            text_search(ctx, query, fetch_count),
+            semantic_search(ctx, query, fetch_count, source_filter),
+            text_search(ctx, query, fetch_count, source_filter),
             return_exceptions=True  # Don't fail if one search errors
         )
 
@@ -397,6 +424,6 @@ async def hybrid_search(
         # Graceful degradation: try semantic-only as last resort
         try:
             logger.info("Falling back to semantic search only")
-            return await semantic_search(ctx, query, match_count)
+            return await semantic_search(ctx, query, match_count, source_filter)
         except:
             return []

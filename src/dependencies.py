@@ -37,7 +37,7 @@ class AgentDependencies:
         """
         if not self.settings:
             self.settings = load_settings()
-            logger.info("settings_loaded", database=self.settings.mongodb_database)
+            logger.info(f"settings_loaded: database={self.settings.mongodb_database}")
 
         # Initialize MongoDB client
         if not self.mongo_client:
@@ -50,15 +50,12 @@ class AgentDependencies:
                 # Verify connection with ping
                 await self.mongo_client.admin.command("ping")
                 logger.info(
-                    "mongodb_connected",
-                    database=self.settings.mongodb_database,
-                    collections={
-                        "documents": self.settings.mongodb_collection_documents,
-                        "chunks": self.settings.mongodb_collection_chunks,
-                    },
+                    f"mongodb_connected: database={self.settings.mongodb_database}, "
+                    f"documents={self.settings.mongodb_collection_documents}, "
+                    f"chunks={self.settings.mongodb_collection_chunks}"
                 )
             except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-                logger.exception("mongodb_connection_failed", error=str(e))
+                logger.exception(f"mongodb_connection_failed: {e}")
                 raise
 
         # Initialize OpenAI client for embeddings
@@ -68,9 +65,8 @@ class AgentDependencies:
                 base_url=self.settings.embedding_base_url,
             )
             logger.info(
-                "openai_client_initialized",
-                model=self.settings.embedding_model,
-                dimension=self.settings.embedding_dimension,
+                f"openai_client_initialized: model={self.settings.embedding_model}, "
+                f"dimension={self.settings.embedding_dimension}"
             )
 
     async def cleanup(self) -> None:
