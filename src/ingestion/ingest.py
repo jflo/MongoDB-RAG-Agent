@@ -5,6 +5,7 @@ This adapts the examples/ingestion/ingest.py pipeline to use MongoDB instead of 
 changing only the database layer while preserving all document processing logic.
 """
 
+import hashlib
 import os
 import asyncio
 import logging
@@ -14,6 +15,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import argparse
 from dataclasses import dataclass
+from enum import Enum
 
 from pymongo import AsyncMongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
@@ -28,6 +30,26 @@ from src.settings import load_settings
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def compute_content_hash(content: str) -> str:
+    """
+    Compute SHA256 hash of document content.
+
+    Args:
+        content: Document content string
+
+    Returns:
+        Hex digest of SHA256 hash
+    """
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+
+class IngestionAction(Enum):
+    """Action taken during incremental ingestion."""
+    INSERTED = "inserted"
+    UPDATED = "updated"
+    SKIPPED = "skipped"
 
 
 @dataclass
@@ -47,6 +69,7 @@ class IngestionResult:
     chunks_created: int
     processing_time_ms: float
     errors: List[str]
+    action: IngestionAction = IngestionAction.INSERTED
 
 
 class DocumentIngestionPipeline:
@@ -395,11 +418,13 @@ class DocumentIngestionPipeline:
         ]
         chunks_collection = self.db[self.settings.mongodb_collection_chunks]
 
-        # Insert document
+        # Insert document with content hash for incremental ingestion
+        content_hash = compute_content_hash(content)
         document_dict = {
             "title": title,
             "source": source,
             "content": content,
+            "content_hash": content_hash,
             "metadata": metadata,
             "created_at": datetime.now()
         }
@@ -448,12 +473,123 @@ class DocumentIngestionPipeline:
         docs_result = await documents_collection.delete_many({})
         logger.info(f"Deleted {docs_result.deleted_count} documents")
 
-    async def _ingest_single_document(self, file_path: str) -> IngestionResult:
+    async def _check_existing_document(
+        self,
+        source: str,
+        content_hash: str
+    ) -> tuple[Optional[ObjectId], bool]:
+        """
+        Check if document already exists and whether it has changed.
+
+        Args:
+            source: Document source path (relative to documents folder)
+            content_hash: SHA256 hash of current content
+
+        Returns:
+            Tuple of (existing_doc_id, needs_update).
+            - (None, False) = new document
+            - (id, False) = unchanged, skip
+            - (id, True) = changed, needs update
+        """
+        documents_collection = self.db[
+            self.settings.mongodb_collection_documents
+        ]
+
+        existing_doc = await documents_collection.find_one(
+            {"source": source},
+            {"_id": 1, "content_hash": 1}
+        )
+
+        if existing_doc is None:
+            return (None, False)
+
+        existing_hash = existing_doc.get("content_hash")
+        if existing_hash == content_hash:
+            # Unchanged
+            return (existing_doc["_id"], False)
+        else:
+            # Changed - needs update
+            return (existing_doc["_id"], True)
+
+    async def _update_document(
+        self,
+        document_id: ObjectId,
+        title: str,
+        source: str,
+        content: str,
+        chunks: List[DocumentChunk],
+        metadata: Dict[str, Any]
+    ) -> str:
+        """
+        Update existing document and replace its chunks.
+
+        Args:
+            document_id: Existing document ObjectId
+            title: Document title
+            source: Document source path
+            content: Document content
+            chunks: List of document chunks with embeddings
+            metadata: Document metadata
+
+        Returns:
+            Document ID (ObjectId as string)
+        """
+        documents_collection = self.db[
+            self.settings.mongodb_collection_documents
+        ]
+        chunks_collection = self.db[self.settings.mongodb_collection_chunks]
+
+        # Delete old chunks
+        delete_result = await chunks_collection.delete_many(
+            {"document_id": document_id}
+        )
+        logger.info(f"Deleted {delete_result.deleted_count} old chunks")
+
+        # Update document
+        content_hash = compute_content_hash(content)
+        await documents_collection.update_one(
+            {"_id": document_id},
+            {"$set": {
+                "title": title,
+                "content": content,
+                "content_hash": content_hash,
+                "metadata": metadata,
+                "updated_at": datetime.now()
+            }}
+        )
+        logger.info(f"Updated document {document_id}")
+
+        # Insert new chunks
+        chunk_dicts = []
+        for chunk in chunks:
+            chunk_dict = {
+                "document_id": document_id,
+                "content": chunk.content,
+                "embedding": chunk.embedding,
+                "chunk_index": chunk.index,
+                "metadata": chunk.metadata,
+                "token_count": chunk.token_count,
+                "created_at": datetime.now()
+            }
+            chunk_dicts.append(chunk_dict)
+
+        if chunk_dicts:
+            await chunks_collection.insert_many(chunk_dicts, ordered=False)
+            logger.info(f"Inserted {len(chunk_dicts)} new chunks")
+
+        return str(document_id)
+
+    async def _ingest_single_document(
+        self,
+        file_path: str,
+        incremental: bool = False
+    ) -> IngestionResult:
         """
         Ingest a single document.
 
         Args:
             file_path: Path to the document file
+            incremental: If True, skip unchanged documents and update changed ones
 
         Returns:
             Ingestion result
@@ -470,6 +606,31 @@ class DocumentIngestionPipeline:
             document_content,
             file_path
         )
+
+        # Check for existing document in incremental mode
+        existing_id: Optional[ObjectId] = None
+        needs_update = False
+        if incremental:
+            content_hash = compute_content_hash(document_content)
+            existing_id, needs_update = await self._check_existing_document(
+                document_source,
+                content_hash
+            )
+
+            if existing_id is not None and not needs_update:
+                # Document unchanged - skip
+                logger.info(f"Skipping unchanged document: {document_title}")
+                processing_time = (
+                    datetime.now() - start_time
+                ).total_seconds() * 1000
+                return IngestionResult(
+                    document_id=str(existing_id),
+                    title=document_title,
+                    chunks_created=0,
+                    processing_time_ms=processing_time,
+                    errors=[],
+                    action=IngestionAction.SKIPPED
+                )
 
         logger.info(f"Processing document: {document_title}")
 
@@ -500,16 +661,30 @@ class DocumentIngestionPipeline:
         embedded_chunks = await self.embedder.embed_chunks(chunks)
         logger.info(f"Generated embeddings for {len(embedded_chunks)} chunks")
 
-        # Save to MongoDB
-        document_id = await self._save_to_mongodb(
-            document_title,
-            document_source,
-            document_content,
-            embedded_chunks,
-            document_metadata
-        )
-
-        logger.info(f"Saved document to MongoDB with ID: {document_id}")
+        # Save or update in MongoDB
+        if incremental and existing_id is not None and needs_update:
+            # Update existing document
+            document_id = await self._update_document(
+                existing_id,
+                document_title,
+                document_source,
+                document_content,
+                embedded_chunks,
+                document_metadata
+            )
+            action = IngestionAction.UPDATED
+            logger.info(f"Updated document in MongoDB with ID: {document_id}")
+        else:
+            # Insert new document
+            document_id = await self._save_to_mongodb(
+                document_title,
+                document_source,
+                document_content,
+                embedded_chunks,
+                document_metadata
+            )
+            action = IngestionAction.INSERTED
+            logger.info(f"Saved document to MongoDB with ID: {document_id}")
 
         # Calculate processing time
         processing_time = (
@@ -521,18 +696,21 @@ class DocumentIngestionPipeline:
             title=document_title,
             chunks_created=len(chunks),
             processing_time_ms=processing_time,
-            errors=[]
+            errors=[],
+            action=action
         )
 
     async def ingest_documents(
         self,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        incremental: bool = False
     ) -> List[IngestionResult]:
         """
         Ingest all documents from the documents folder.
 
         Args:
             progress_callback: Optional callback for progress updates
+            incremental: If True, skip unchanged docs and update changed ones
 
         Returns:
             List of ingestion results
@@ -540,9 +718,11 @@ class DocumentIngestionPipeline:
         if not self._initialized:
             await self.initialize()
 
-        # Clean existing data if requested
-        if self.clean_before_ingest:
+        # Clean existing data if requested (skip in incremental mode)
+        if self.clean_before_ingest and not incremental:
             await self._clean_databases()
+        elif incremental:
+            logger.info("Incremental mode: skipping database clean")
 
         # Find all supported document files
         document_files = self._find_document_files()
@@ -563,7 +743,10 @@ class DocumentIngestionPipeline:
                     f"Processing file {i+1}/{len(document_files)}: {file_path}"
                 )
 
-                result = await self._ingest_single_document(file_path)
+                result = await self._ingest_single_document(
+                    file_path,
+                    incremental=incremental
+                )
                 results.append(result)
 
                 if progress_callback:
@@ -629,6 +812,11 @@ async def main() -> None:
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--incremental", "-i",
+        action="store_true",
+        help="Incremental mode: skip unchanged docs, update changed ones"
+    )
 
     args = parser.parse_args()
 
@@ -660,7 +848,10 @@ async def main() -> None:
     try:
         start_time = datetime.now()
 
-        results = await pipeline.ingest_documents(progress_callback)
+        results = await pipeline.ingest_documents(
+            progress_callback,
+            incremental=args.incremental
+        )
 
         end_time = datetime.now()
         total_time = (end_time - start_time).total_seconds()
@@ -673,11 +864,31 @@ async def main() -> None:
         print(f"Total chunks created: {sum(r.chunks_created for r in results)}")
         print(f"Total errors: {sum(len(r.errors) for r in results)}")
         print(f"Total processing time: {total_time:.2f} seconds")
+
+        # Incremental mode stats
+        if args.incremental:
+            inserted = sum(
+                1 for r in results if r.action == IngestionAction.INSERTED
+            )
+            updated = sum(
+                1 for r in results if r.action == IngestionAction.UPDATED
+            )
+            skipped = sum(
+                1 for r in results if r.action == IngestionAction.SKIPPED
+            )
+            print(f"  Inserted: {inserted}, Updated: {updated}, Skipped: {skipped}")
         print()
 
         # Print individual results
         for result in results:
-            status = "[OK]" if not result.errors else "[FAILED]"
+            if result.errors:
+                status = "[FAILED]"
+            elif result.action == IngestionAction.SKIPPED:
+                status = "[SKIP]"
+            elif result.action == IngestionAction.UPDATED:
+                status = "[UPDATE]"
+            else:
+                status = "[OK]"
             print(f"{status} {result.title}: {result.chunks_created} chunks")
 
             if result.errors:
