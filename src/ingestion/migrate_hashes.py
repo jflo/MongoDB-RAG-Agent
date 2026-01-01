@@ -9,6 +9,7 @@ in the documents folder to match what incremental ingestion will compute.
 Usage:
     uv run python -m src.ingestion.migrate_hashes -d ./documents
     uv run python -m src.ingestion.migrate_hashes -d ./documents --dry-run
+    uv run python -m src.ingestion.migrate_hashes -d ./documents --force
 """
 
 import asyncio
@@ -34,9 +35,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def migrate_hashes(documents_folder: str, dry_run: bool = False) -> None:
+async def migrate_hashes(
+    documents_folder: str,
+    dry_run: bool = False,
+    force: bool = False
+) -> None:
     """
-    Compute and store content_hash for all documents missing it.
+    Compute and store content_hash for documents.
 
     Reads the source files from the documents folder and computes hashes
     from the converted content (same as ingestion does).
@@ -44,6 +49,7 @@ async def migrate_hashes(documents_folder: str, dry_run: bool = False) -> None:
     Args:
         documents_folder: Path to the documents folder
         dry_run: If True, only report what would be updated without making changes
+        force: If True, overwrite existing hashes with freshly computed ones
     """
     settings = load_settings()
 
@@ -76,15 +82,23 @@ async def migrate_hashes(documents_folder: str, dry_run: bool = False) -> None:
         db = client[settings.mongodb_database]
         documents_collection = db[settings.mongodb_collection_documents]
 
-        # Find documents without content_hash
-        query = {"content_hash": {"$exists": False}}
-        total_missing = await documents_collection.count_documents(query)
+        # Find documents to process
+        if force:
+            # All documents with a source path
+            query = {"source": {"$exists": True}}
+            total_docs = await documents_collection.count_documents(query)
+            logger.info(f"FORCE mode: will recompute hashes for {total_docs} documents")
+        else:
+            # Only documents missing content_hash
+            query = {"content_hash": {"$exists": False}}
+            total_docs = await documents_collection.count_documents(query)
 
-        if total_missing == 0:
-            logger.info("All documents already have content_hash. Nothing to migrate.")
-            return
+            if total_docs == 0:
+                logger.info("All documents already have content_hash. Nothing to migrate.")
+                logger.info("Use --force to recompute all hashes from source files.")
+                return
 
-        logger.info(f"Found {total_missing} documents without content_hash")
+            logger.info(f"Found {total_docs} documents without content_hash")
 
         if dry_run:
             logger.info("DRY RUN - no changes will be made")
@@ -136,7 +150,7 @@ async def migrate_hashes(documents_folder: str, dry_run: bool = False) -> None:
                     updated += 1
 
                     if updated % 10 == 0:
-                        logger.info(f"Progress: {updated}/{total_missing} documents updated")
+                        logger.info(f"Progress: {updated}/{total_docs} documents updated")
 
             except Exception as e:
                 logger.error(f"Failed to process {title}: {e}")
@@ -144,7 +158,7 @@ async def migrate_hashes(documents_folder: str, dry_run: bool = False) -> None:
 
         if dry_run:
             logger.info(
-                f"DRY RUN complete: {total_missing - skipped} would be updated, "
+                f"DRY RUN complete: {total_docs - skipped} would be updated, "
                 f"{skipped} skipped, {errors} errors"
             )
         else:
@@ -175,11 +189,17 @@ async def main() -> None:
         action="store_true",
         help="Show what would be updated without making changes"
     )
+    parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Recompute and overwrite all hashes, even if they already exist"
+    )
     args = parser.parse_args()
 
     await migrate_hashes(
         documents_folder=args.documents,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        force=args.force
     )
 
 
