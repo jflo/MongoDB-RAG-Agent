@@ -469,3 +469,101 @@ See [documentation](https://docs.example.com) for more."""
         assert "*answer*" in result
         assert "• Point 1" in result
         assert "<https://docs.example.com|documentation>" in result
+
+
+class TestLinkifyCitations:
+    """Test cases for citation linkification."""
+
+    def test_basic_citation_linkification(self):
+        """Plain text citations should be converted to markdown links."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("GRR6610_TheExpanse_TUE_Core.pdf", 42): "https://komga.example.com/book/abc/read?page=42"
+        }
+        text = "According to GRR6610_TheExpanse_TUE_Core.pdf, p. 42, the rule is..."
+        result = linkify_citations(text, citation_map)
+
+        assert "[GRR6610_TheExpanse_TUE_Core.pdf, p. 42](https://komga.example.com/book/abc/read?page=42)" in result
+
+    def test_citation_in_parentheses(self):
+        """Citations wrapped in parentheses should be linkified."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("rules.pdf", 10): "https://komga.example.com/book/xyz/read?page=10"
+        }
+        text = "This is explained (rules.pdf, page 10) in detail."
+        result = linkify_citations(text, citation_map)
+
+        assert "[rules.pdf, p. 10]" in result
+        assert "https://komga.example.com/book/xyz/read?page=10" in result
+
+    def test_multiple_citations(self):
+        """Multiple citations in same text should all be linkified."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("doc1.pdf", 5): "https://komga.example.com/1",
+            ("doc2.pdf", 15): "https://komga.example.com/2"
+        }
+        text = "See doc1.pdf, p. 5 and also doc2.pdf, page 15."
+        result = linkify_citations(text, citation_map)
+
+        assert "[doc1.pdf, p. 5](https://komga.example.com/1)" in result
+        assert "[doc2.pdf, p. 15](https://komga.example.com/2)" in result
+
+    def test_citation_not_in_map_unchanged(self):
+        """Citations not in the map should remain as plain text."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("other.pdf", 1): "https://komga.example.com/other"
+        }
+        text = "See unknown.pdf, p. 99 for details."
+        result = linkify_citations(text, citation_map)
+
+        assert result == text  # Unchanged
+
+    def test_empty_citation_map(self):
+        """Empty citation map should return text unchanged."""
+        from src.response_filter import linkify_citations
+
+        text = "See rules.pdf, p. 42 for details."
+        result = linkify_citations(text, {})
+
+        assert result == text
+
+    def test_already_linked_citation_not_doubled(self):
+        """Already-linked citations should not be double-linked."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("rules.pdf", 42): "https://komga.example.com/new"
+        }
+        # Already has a markdown link
+        text = "See [rules.pdf, p. 42](https://komga.example.com/existing) for details."
+        result = linkify_citations(text, citation_map)
+
+        # Should not create nested links
+        assert result.count("[rules.pdf") == 1
+
+    def test_various_page_formats(self):
+        """Different page number formats should all be matched."""
+        from src.response_filter import linkify_citations
+
+        citation_map = {
+            ("doc.pdf", 10): "https://komga.example.com/page10"
+        }
+
+        # Test "p. X" format
+        result1 = linkify_citations("doc.pdf, p. 10", citation_map)
+        assert "https://komga.example.com/page10" in result1
+
+        # Test "page X" format
+        result2 = linkify_citations("doc.pdf, page 10", citation_map)
+        assert "https://komga.example.com/page10" in result2
+
+        # Test "p X" format (no period)
+        result3 = linkify_citations("doc.pdf, p 10", citation_map)
+        assert "https://komga.example.com/page10" in result3

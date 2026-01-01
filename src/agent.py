@@ -19,18 +19,26 @@ GAME_LOGS_FILTER = r"^GMT.*\.transcript_summary\.md$"  # Session transcripts
 
 
 class RAGState(BaseModel):
-    """Minimal shared state for the RAG agent."""
-    pass
+    """Shared state for the RAG agent."""
+
+    # Maps (filename, page) -> komga_url for citation linking
+    # Example: {("GRR6610_TheExpanse_TUE_Core.pdf", 42): "https://komga.../read?page=42"}
+    citation_map: dict[tuple[str, int], str] = {}
 
 
-async def format_search_results(results: List[SearchResult]) -> str:
+async def format_search_results(
+    results: List[SearchResult],
+    state: Optional[RAGState] = None
+) -> str:
     """
     Format search results as a string for the LLM.
 
     Includes Komga deep links when available for PDF sources.
+    Populates state.citation_map for post-processing citations.
 
     Args:
         results: List of search results to format
+        state: Optional RAGState to populate citation_map
 
     Returns:
         Formatted string with document info and content
@@ -62,6 +70,17 @@ async def format_search_results(results: List[SearchResult]) -> str:
             url = await komga.get_source_url(result.document_source, first_page)
             if url:
                 source_link = f" [View in Komga]({url})"
+                # Populate citation map for post-processing
+                if state is not None and page_numbers:
+                    for page in page_numbers:
+                        # Get URL for each page in the chunk
+                        page_url = await komga.get_source_url(
+                            result.document_source, page
+                        )
+                        if page_url:
+                            state.citation_map[(result.document_source, page)] = (
+                                page_url
+                            )
 
         response_parts.append(
             f"\n--- Document {i}: {result.document_title} "
@@ -135,7 +154,9 @@ async def search_knowledge_base(
         # Clean up
         await agent_deps.cleanup()
 
-        return await format_search_results(results)
+        # Get state for citation map population
+        state = ctx.deps.state if ctx.deps else None
+        return await format_search_results(results, state)
 
     except Exception as e:
         return f"Error searching knowledge base: {str(e)}"
@@ -183,7 +204,10 @@ async def search_rules(
         )
 
         await agent_deps.cleanup()
-        return await format_search_results(results)
+
+        # Get state for citation map population
+        state = ctx.deps.state if ctx.deps else None
+        return await format_search_results(results, state)
 
     except Exception as e:
         return f"Error searching rules: {str(e)}"
@@ -191,7 +215,7 @@ async def search_rules(
 
 @rag_agent.tool
 async def search_game_logs(
-    ctx: RunContext[StateDeps[RAGState]],  # noqa: ARG001
+    ctx: RunContext[StateDeps[RAGState]],
     query: str,
     match_count: Optional[int] = 20
 ) -> str:
@@ -231,7 +255,10 @@ async def search_game_logs(
         )
 
         await agent_deps.cleanup()
-        return await format_search_results(results)
+
+        # Get state for citation map population
+        state = ctx.deps.state if ctx.deps else None
+        return await format_search_results(results, state)
 
     except Exception as e:
         return f"Error searching game logs: {str(e)}"

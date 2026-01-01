@@ -225,19 +225,77 @@ def markdown_to_slack(text: str) -> str:
     return result
 
 
-def filter_response_for_slack(text: str) -> str:
+def linkify_citations(
+    text: str,
+    citation_map: dict[tuple[str, int], str]
+) -> str:
+    """
+    Convert plain text citations to clickable markdown links using citation_map.
+
+    Matches patterns like:
+    - (GRR6610_TheExpanse_TUE_Core.pdf, p. 42)
+    - (filename.pdf, page 42)
+    - GRR6610_TheExpanse_TUE_Core.pdf, p. 42
+    - [filename.pdf, p. 42] (not already a link)
+
+    Args:
+        text: Response text with plain citations
+        citation_map: Map of (filename, page) -> komga_url
+
+    Returns:
+        Text with plain citations converted to markdown links
+    """
+    if not citation_map:
+        return text
+
+    # Pattern to match citations in various formats:
+    # - (filename.pdf, p. 42) or (filename.pdf, page 42)
+    # - filename.pdf, p. 42 or filename.pdf, page 42
+    # Captures: filename, page number
+    # Negative lookbehind to avoid matching already-linked citations
+    pattern = r'(?<!\]\()(?<!\|)(\b[\w-]+\.pdf)\s*,?\s*(?:p\.?|page)\s*(\d+)'
+
+    def replace_citation(match: re.Match) -> str:
+        filename = match.group(1)
+        page = int(match.group(2))
+
+        # Look up in citation map
+        url = citation_map.get((filename, page))
+        if url:
+            # Return as markdown link
+            return f"[{filename}, p. {page}]({url})"
+        else:
+            # No URL found, return original
+            return match.group(0)
+
+    result = re.sub(pattern, replace_citation, text, flags=re.IGNORECASE)
+
+    # Also handle citations wrapped in parentheses - clean them up
+    # Convert "([ link ])" to "[ link ]"
+    result = re.sub(r'\(\[([^\]]+\.pdf[^\]]+)\]\(([^)]+)\)\)', r'[\1](\2)', result)
+
+    return result
+
+
+def filter_response_for_slack(
+    text: str,
+    citation_map: dict[tuple[str, int], str] | None = None
+) -> str:
     """
     Apply all response filters and convert to Slack format.
 
     Combines think block filtering, tool artifact filtering,
-    and Markdown to Slack mrkdwn conversion.
+    citation linkification, and Markdown to Slack mrkdwn conversion.
 
     Args:
         text: Raw response text with Markdown
+        citation_map: Optional map of (filename, page) -> komga_url
 
     Returns:
         Cleaned text formatted for Slack
     """
     result = filter_response(text)
+    if citation_map:
+        result = linkify_citations(result, citation_map)
     result = markdown_to_slack(result)
     return result
