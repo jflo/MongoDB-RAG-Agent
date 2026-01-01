@@ -134,7 +134,8 @@ async def handle_mention(event: dict, say, client) -> None:
         logger.info("LLM agent call completed successfully")
 
         # Get and clean response (filter think blocks, tool artifacts, and linkify citations)
-        response = filter_response_for_slack(result.response, state.citation_map)
+        komga = get_komga_client(settings)
+        response = filter_response_for_slack(result.response, state.citation_map, komga)
 
         # Handle errors
         if result.error:

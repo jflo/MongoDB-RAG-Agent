@@ -181,6 +181,38 @@ class KomgaClient:
             # Return URL to book viewer at page 1
             return f"{self.base_url}/book/{book_id}/read?page=1"
 
+    def get_source_url_sync(self, filename: str, page_number: Optional[int] = None) -> Optional[str]:
+        """
+        Get a deep link URL using only the local cache (no API calls).
+
+        This is a synchronous version that only checks the cache.
+        Useful for post-processing citations without async context.
+
+        Args:
+            filename: Source filename (with or without .pdf extension)
+            page_number: Optional page number (1-indexed)
+
+        Returns:
+            Komga URL if book found in cache, None otherwise
+        """
+        if not self.is_configured():
+            return None
+
+        # Try exact match first
+        book_id = self._cache.get(filename)
+
+        # Try with .pdf extension if not found
+        if not book_id and not filename.endswith('.pdf'):
+            book_id = self._cache.get(filename + '.pdf')
+
+        if not book_id:
+            return None
+
+        if page_number:
+            return self.get_page_url(book_id, page_number)
+        else:
+            return f"{self.base_url}/book/{book_id}/read?page=1"
+
 
 # Singleton instance for reuse
 _komga_client: Optional[KomgaClient] = None

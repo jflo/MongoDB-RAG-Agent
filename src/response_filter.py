@@ -4,8 +4,13 @@ Provides both streaming and batch filtering for use by CLI and Slack interfaces.
 Also provides Markdown to Slack mrkdwn conversion.
 """
 
+from __future__ import annotations
+
 import re
-from typing import Tuple
+from typing import Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.komga import KomgaClient
 
 
 def filter_think_streaming(
@@ -227,48 +232,77 @@ def markdown_to_slack(text: str) -> str:
 
 def linkify_citations(
     text: str,
-    citation_map: dict[tuple[str, int], str]
+    citation_map: dict[tuple[str, int], str] | None = None,
+    komga_client: KomgaClient | None = None
 ) -> str:
     """
-    Convert plain text citations to clickable markdown links using citation_map.
+    Convert plain text citations to clickable markdown links.
+
+    Uses citation_map for known pages from search results, and falls back
+    to komga_client cache for any other valid PDF citations.
 
     Matches patterns like:
     - (GRR6610_TheExpanse_TUE_Core.pdf, p. 42)
     - (filename.pdf, page 42)
+    - (filename.pdf, pages 42-45)
     - GRR6610_TheExpanse_TUE_Core.pdf, p. 42
     - [filename.pdf, p. 42] (not already a link)
 
     Args:
         text: Response text with plain citations
-        citation_map: Map of (filename, page) -> komga_url
+        citation_map: Map of (filename, page) -> komga_url (from search results)
+        komga_client: Optional Komga client for fallback URL generation
 
     Returns:
         Text with plain citations converted to markdown links
     """
-    if not citation_map:
+    if not citation_map and not komga_client:
         return text
 
+    citation_map = citation_map or {}
+
+    # Normalize various dash characters to regular hyphen for easier matching
+    # U+2010 hyphen, U+2011 non-breaking hyphen, U+2012 figure dash,
+    # U+2013 en dash, U+2014 em dash
+    normalized_text = text
+    for dash in ['\u2010', '\u2011', '\u2012', '\u2013', '\u2014']:
+        normalized_text = normalized_text.replace(dash, '-')
+
     # Pattern to match citations in various formats:
-    # - (filename.pdf, p. 42) or (filename.pdf, page 42)
-    # - filename.pdf, p. 42 or filename.pdf, page 42
-    # Captures: filename, page number
+    # - (filename.pdf, p. 42) or (filename.pdf, page 42) or (filename.pdf, pages 42-45)
+    # - filename.pdf, p. 42 or filename.pdf, page 42 or filename.pdf, pages 42-45
+    # - GRR6610_TheExpanse_TUE_Core_2025-12-17, pp. 19-20 (without .pdf extension)
+    # Captures: filename (with optional .pdf), first page number, optional second page number
     # Negative lookbehind to avoid matching already-linked citations
-    pattern = r'(?<!\]\()(?<!\|)(\b[\w-]+\.pdf)\s*,?\s*(?:p\.?|page)\s*(\d+)'
+    pattern = r'(?<!\]\()(?<!\|)(\b[\w-]+(?:\.pdf)?)\s*,?\s*(?:pp?\.?|pages?)\s*(\d+)(?:\s*[-–—]\s*(\d+))?'
 
     def replace_citation(match: re.Match) -> str:
         filename = match.group(1)
-        page = int(match.group(2))
+        first_page = int(match.group(2))
+        last_page = int(match.group(3)) if match.group(3) else None
 
-        # Look up in citation map
-        url = citation_map.get((filename, page))
+        # Look up first page in citation map
+        # Try exact match first, then with .pdf appended if missing
+        url = citation_map.get((filename, first_page))
+        if not url and not filename.endswith('.pdf'):
+            url = citation_map.get((filename + '.pdf', first_page))
+
+        # Fall back to Komga client cache if not in citation_map
+        if not url and komga_client:
+            url = komga_client.get_source_url_sync(filename, first_page)
+
         if url:
-            # Return as markdown link
-            return f"[{filename}, p. {page}]({url})"
+            # Format the link text based on whether it's a range or single page
+            if last_page:
+                link_text = f"{filename}, pp. {first_page}-{last_page}"
+            else:
+                link_text = f"{filename}, p. {first_page}"
+            return f"[{link_text}]({url})"
         else:
             # No URL found, return original
             return match.group(0)
 
-    result = re.sub(pattern, replace_citation, text, flags=re.IGNORECASE)
+    result = re.sub(pattern, replace_citation, normalized_text, flags=re.IGNORECASE)
 
     # Also handle citations wrapped in parentheses - clean them up
     # Convert "([ link ])" to "[ link ]"
@@ -279,7 +313,8 @@ def linkify_citations(
 
 def filter_response_for_slack(
     text: str,
-    citation_map: dict[tuple[str, int], str] | None = None
+    citation_map: dict[tuple[str, int], str] | None = None,
+    komga_client: KomgaClient | None = None
 ) -> str:
     """
     Apply all response filters and convert to Slack format.
@@ -290,12 +325,13 @@ def filter_response_for_slack(
     Args:
         text: Raw response text with Markdown
         citation_map: Optional map of (filename, page) -> komga_url
+        komga_client: Optional Komga client for fallback URL generation
 
     Returns:
         Cleaned text formatted for Slack
     """
     result = filter_response(text)
-    if citation_map:
-        result = linkify_citations(result, citation_map)
+    if citation_map or komga_client:
+        result = linkify_citations(result, citation_map, komga_client)
     result = markdown_to_slack(result)
     return result
