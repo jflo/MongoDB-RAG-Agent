@@ -65,7 +65,7 @@ def _strip_system_prompts(message_history: List) -> List:
 
 
 @dataclass
-class AgentResult:
+class AnneResult:
     """Result from agent execution."""
 
     response: str
@@ -82,7 +82,7 @@ async def run_agent(
     user_input: str,
     deps: StateDeps[RAGState],
     message_history: Optional[List] = None,
-) -> AgentResult:
+) -> AnneResult:
     """
     Run agent without streaming (for Slack and batch processing).
 
@@ -92,7 +92,7 @@ async def run_agent(
         message_history: Optional conversation history
 
     Returns:
-        AgentResult with response and new messages
+        AnneResult with response and new messages
     """
     message_history = message_history or []
 
@@ -119,7 +119,7 @@ async def run_agent(
         if not response:
             response = "I processed your request but have no response to share."
 
-        return AgentResult(
+        return AnneResult(
             response=response,
             new_messages=result.new_messages()
         )
@@ -131,7 +131,7 @@ async def run_agent(
         if is_retryable_error(e):
             error_msg += "\n\n_This error may be temporary. Please try again in a moment._"
 
-        return AgentResult(
+        return AnneResult(
             response="",
             new_messages=[],
             error=error_msg
@@ -154,7 +154,7 @@ async def stream_agent(
     deps: StateDeps[RAGState],
     message_history: Optional[List] = None,
     on_chunk: Optional[Callable[[str], None]] = None,
-) -> AgentResult:
+) -> AnneResult:
     """
     Stream agent execution with real-time output.
 
@@ -165,7 +165,7 @@ async def stream_agent(
         on_chunk: Optional callback for each text chunk (for custom output)
 
     Returns:
-        AgentResult with full response and new messages
+        AnneResult with full response and new messages
     """
     message_history = message_history or []
 
@@ -240,19 +240,19 @@ async def stream_agent(
                     pass
 
         # Get final output
-        final_output = run.result.output if hasattr(run.result, 'output') else str(run.result)
+        final_output = run.result.output if run.result and hasattr(run.result, 'output') else str(run.result)
         response = response_text.strip() or final_output
 
-        return AgentResult(
+        return AnneResult(
             response=response,
-            new_messages=run.result.new_messages()
+            new_messages=run.result.new_messages() if run.result else []
         )
 
     except Exception as e:
         logger.exception(f"Agent streaming failed: {e}")
         error_msg = format_error_for_cli(e)
 
-        return AgentResult(
+        return AnneResult(
             response="",
             new_messages=[],
             error=error_msg

@@ -1,7 +1,13 @@
 """Tests for think block filtering in CLI streaming."""
 
 import pytest
-from src.response_filter import filter_think_streaming, filter_think_content, filter_response
+from src.response_filter import (
+    filter_think_streaming,
+    filter_think_content,
+    filter_response,
+    markdown_to_slack,
+    filter_response_for_slack
+)
 
 
 class TestThinkBlockFilter:
@@ -329,3 +335,137 @@ class TestToolArtifactFilter:
         result = filter_think_content(text)
         assert result == "External response."
         assert "Internal" not in result
+
+
+class TestMarkdownToSlack:
+    """Test cases for Markdown to Slack mrkdwn conversion."""
+
+    def test_bold_double_asterisk(self):
+        """**bold** should become *bold*."""
+        result = markdown_to_slack("This is **bold** text.")
+        assert result == "This is *bold* text."
+
+    def test_bold_double_underscore(self):
+        """__bold__ should become *bold*."""
+        result = markdown_to_slack("This is __bold__ text.")
+        assert result == "This is *bold* text."
+
+    def test_italic_single_asterisk(self):
+        """*italic* should become _italic_."""
+        result = markdown_to_slack("This is *italic* text.")
+        assert result == "This is _italic_ text."
+
+    def test_strikethrough(self):
+        """~~strikethrough~~ should become ~strikethrough~."""
+        result = markdown_to_slack("This is ~~deleted~~ text.")
+        assert result == "This is ~deleted~ text."
+
+    def test_link_conversion(self):
+        """[text](url) should become <url|text>."""
+        result = markdown_to_slack("Check [this link](https://example.com) out.")
+        assert result == "Check <https://example.com|this link> out."
+
+    def test_header_h1(self):
+        """# Header should become *Header*."""
+        result = markdown_to_slack("# Main Title\nSome content.")
+        assert result == "*Main Title*\nSome content."
+
+    def test_header_h2(self):
+        """## Header should become *Header*."""
+        result = markdown_to_slack("## Section Title")
+        assert result == "*Section Title*"
+
+    def test_header_h3(self):
+        """### Header should become *Header*."""
+        result = markdown_to_slack("### Subsection")
+        assert result == "*Subsection*"
+
+    def test_bullet_list_dash(self):
+        """- item should become • item."""
+        result = markdown_to_slack("- First item\n- Second item")
+        assert result == "• First item\n• Second item"
+
+    def test_bullet_list_asterisk(self):
+        """* item should become • item."""
+        result = markdown_to_slack("* First item\n* Second item")
+        assert result == "• First item\n• Second item"
+
+    def test_inline_code_preserved(self):
+        """`code` should remain unchanged."""
+        result = markdown_to_slack("Use the `print()` function.")
+        assert result == "Use the `print()` function."
+
+    def test_code_block_preserved(self):
+        """```code``` blocks should remain unchanged."""
+        text = "Example:\n```python\nprint('hello')\n```\nDone."
+        result = markdown_to_slack(text)
+        assert "```python\nprint('hello')\n```" in result
+
+    def test_code_block_not_affected_by_bold(self):
+        """Bold syntax inside code blocks should not be converted."""
+        text = "```\n**not bold**\n```"
+        result = markdown_to_slack(text)
+        assert "**not bold**" in result
+
+    def test_inline_code_not_affected_by_italic(self):
+        """Italic syntax inside inline code should not be converted."""
+        result = markdown_to_slack("Use `*args` for variable arguments.")
+        assert "`*args`" in result
+
+    def test_complex_formatting(self):
+        """Multiple formatting types in one message."""
+        text = "# Title\n\nThis is **bold** and *italic* text.\n\n- Item 1\n- Item 2\n\nSee [docs](https://docs.com)."
+        result = markdown_to_slack(text)
+        assert "*Title*" in result
+        assert "*bold*" in result
+        assert "_italic_" in result
+        assert "• Item 1" in result
+        assert "<https://docs.com|docs>" in result
+
+    def test_empty_string(self):
+        """Empty string should return empty string."""
+        result = markdown_to_slack("")
+        assert result == ""
+
+    def test_plain_text_unchanged(self):
+        """Plain text without formatting should remain unchanged."""
+        text = "Just plain text with no special formatting."
+        result = markdown_to_slack(text)
+        assert result == text
+
+
+class TestFilterResponseForSlack:
+    """Test cases for combined Slack response filtering."""
+
+    def test_filters_think_and_converts_markdown(self):
+        """Should filter think blocks and convert Markdown."""
+        text = "<think>Internal thought</think>Here is **bold** text."
+        result = filter_response_for_slack(text)
+        assert "Internal thought" not in result
+        assert "*bold*" in result
+        assert "**bold**" not in result
+
+    def test_filters_tools_and_converts_markdown(self):
+        """Should filter tool artifacts and convert Markdown."""
+        text = '{"tool": "search", "args": {}} Check [this](https://example.com).'
+        result = filter_response_for_slack(text)
+        assert '{"tool"' not in result
+        assert "<https://example.com|this>" in result
+
+    def test_full_pipeline(self):
+        """Full filtering and conversion pipeline."""
+        text = """<think>Let me think about this...</think>
+# Answer
+
+Here is the **answer** to your question:
+
+- Point 1
+- Point 2
+
+See [documentation](https://docs.example.com) for more."""
+        result = filter_response_for_slack(text)
+        assert "Let me think" not in result
+        assert "*Answer*" in result
+        assert "*answer*" in result
+        assert "• Point 1" in result
+        assert "<https://docs.example.com|documentation>" in result

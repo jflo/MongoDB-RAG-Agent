@@ -15,6 +15,9 @@ from src.agent import RAGState
 from src.settings import load_settings
 from src.agent_runner import run_agent
 from src.komga import get_komga_client
+from src.conversation_store import ConversationStore
+from src.response_filter import filter_response_for_slack
+from src.errors import format_error_for_slack, is_retryable_error
 
 # Configure logging
 logging.basicConfig(
@@ -25,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Load settings
 settings = load_settings()
+
+# Log LLM configuration for debugging
+logger.info(f"LLM configured: model={settings.llm_model}, base_url={settings.llm_base_url}")
 
 # Validate Slack configuration
 if not settings.slack_bot_token or not settings.slack_app_token:
@@ -226,6 +232,10 @@ async def handle_mention(event: dict, say, client) -> None:
 
         # Delete the thinking message
         await client.chat_delete(channel=channel_id, ts=thinking_ts)
+        logger.info("LLM agent call completed successfully")
+
+        # Get and clean response (filter think blocks and tool artifacts)
+        response = filter_response_for_slack(result.response)
 
         # Handle errors
         if result.error:
@@ -233,7 +243,7 @@ async def handle_mention(event: dict, say, client) -> None:
             return
 
         # Extract tables and text segments from response
-        segments = _extract_tables_and_text(result.response)
+        segments = _extract_tables_and_text(response)
 
         # Send each segment appropriately
         for segment in segments:
@@ -274,7 +284,10 @@ async def handle_message(event: dict) -> None:
     Currently a no-op - we only respond to mentions.
     This handler prevents warnings about unhandled events.
     """
-    # Only respond to mentions, not all messages
+    # Log all message events for debugging
+    subtype = event.get("subtype", "normal")
+    text = event.get("text", "")[:50] if event.get("text") else "(no text)"
+    logger.debug(f"Message event received: subtype={subtype}, text={text}...")
     pass
 
 
@@ -298,6 +311,11 @@ async def main() -> None:
     try:
         # Start Socket Mode handler
         logger.info("Starting Slack bot in Socket Mode...")
+        logger.info("Make sure your Slack app has:")
+        logger.info("  - Event Subscriptions enabled with 'app_mention' event")
+        logger.info("  - Bot scopes: app_mentions:read, chat:write")
+        logger.info("Waiting for events... (Ctrl+C to quit)")
+
         handler = AsyncSocketModeHandler(app, settings.slack_app_token)
         await handler.start_async()
 
