@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from src.agent import RAGState
 from src.settings import load_settings
 from src.agent_runner import stream_agent
+from src.komga import get_komga_client
 
 # Load environment variables
 load_dotenv(override=True)
@@ -96,7 +97,21 @@ async def main():
     # Create StateDeps wrapper with the state
     deps = StateDeps[RAGState](state=state)
 
-    console.print("[bold green]✓[/bold green] Search system initialized\n")
+    console.print("[bold green]✓[/bold green] Search system initialized")
+
+    # Test Komga connectivity if configured
+    settings = load_settings()
+    komga = get_komga_client(settings)
+    if komga.is_configured():
+        success, message = await komga.test_connection()
+        if success:
+            console.print(f"[bold green]✓[/bold green] Komga: {message}")
+        else:
+            console.print(f"[bold yellow]![/bold yellow] Komga: {message}")
+    else:
+        console.print("[dim]Komga: Not configured (PDF deep links disabled)[/dim]")
+
+    console.print()
 
     # Initialize message history with proper Pydantic AI message objects
     message_history = []

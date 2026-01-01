@@ -109,6 +109,27 @@ class Settings(BaseSettings):
         description="MongoDB collection for Slack conversation history"
     )
 
+    # Komga Configuration (PDF hosting with deep links)
+    komga_base_url: Optional[str] = Field(
+        default=None,
+        description="Base URL for Komga server (e.g., https://komga.example.com)"
+    )
+
+    komga_username: Optional[str] = Field(
+        default=None,
+        description="Komga username for API authentication"
+    )
+
+    komga_password: Optional[str] = Field(
+        default=None,
+        description="Komga password for API authentication"
+    )
+
+    komga_cache_file: str = Field(
+        default=".komga_cache.json",
+        description="Path to local JSON file for caching book ID lookups"
+    )
+
 
 def load_settings() -> Settings:
     """Load settings with proper error handling."""

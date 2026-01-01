@@ -14,6 +14,7 @@ from pydantic_ai.ag_ui import StateDeps
 from src.agent import RAGState
 from src.settings import load_settings
 from src.agent_runner import run_agent
+from src.komga import get_komga_client
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +52,132 @@ def _extract_query(text: str) -> str:
     """
     # Remove <@UXXXXX> mention patterns
     return re.sub(r"<@U[A-Z0-9]+>", "", text).strip()
+
+
+def _markdown_to_slack_mrkdwn(text: str) -> str:
+    """
+    Convert markdown links to Slack mrkdwn format.
+
+    Handles both standard markdown [text](url) and fullwidth unicode variants
+    that LLMs sometimes produce: 【text】(url) or 【[text]url】
+
+    Args:
+        text: Text with markdown links
+
+    Returns:
+        Text with Slack mrkdwn links like <url|text>
+    """
+    # Standard markdown links [text](url) to Slack format <url|text>
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', text)
+
+    # Fullwidth bracket variant: 【[text]url】 (LLM sometimes produces this)
+    text = re.sub(r'【\[([^\]]+)\](https?://[^】]+)】', r'<\2|\1>', text)
+
+    # Fullwidth bracket variant: 【text】(url)
+    text = re.sub(r'【([^】]+)】\(([^)]+)\)', r'<\2|\1>', text)
+
+    return text
+
+
+def _strip_markdown(text: str) -> str:
+    """
+    Strip markdown formatting from text for plain text contexts.
+
+    Args:
+        text: Text with markdown formatting
+
+    Returns:
+        Plain text without markdown
+    """
+    # Remove markdown links, keeping just the link text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # Remove bold/italic markers
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+    return text
+
+
+def _parse_markdown_table(table_text: str) -> list[list[dict]]:
+    """
+    Parse a markdown table into Slack Block Kit table rows.
+
+    Strips markdown formatting from cell content since Block Kit tables
+    only support plain text.
+
+    Args:
+        table_text: Markdown table string
+
+    Returns:
+        List of rows, where each row is a list of cell dicts
+    """
+    lines = [line.strip() for line in table_text.strip().split("\n") if line.strip()]
+    rows = []
+
+    for line in lines:
+        # Skip separator lines (|---|---|)
+        if re.match(r"^\|[-:\s|]+\|$", line):
+            continue
+
+        # Parse cells from table row
+        cells = [cell.strip() for cell in line.split("|")]
+        # Remove empty strings from start/end (from leading/trailing |)
+        cells = [c for c in cells if c]
+
+        if cells:
+            # Strip markdown from cell content (tables don't support formatting)
+            row = [{"type": "raw_text", "text": _strip_markdown(cell)} for cell in cells]
+            rows.append(row)
+
+    return rows
+
+
+def _extract_tables_and_text(content: str) -> list[dict]:
+    """
+    Split content into text segments and markdown tables.
+
+    Args:
+        content: Response text that may contain markdown tables
+
+    Returns:
+        List of segments, each with 'type' ('text' or 'table') and content
+    """
+    # Pattern to match markdown tables (lines starting with |)
+    table_pattern = r"((?:^\|.+\|$\n?)+)"
+
+    segments = []
+    last_end = 0
+
+    for match in re.finditer(table_pattern, content, re.MULTILINE):
+        # Add text before the table
+        if match.start() > last_end:
+            text_before = content[last_end:match.start()].strip()
+            if text_before:
+                segments.append({"type": "text", "content": text_before})
+
+        # Parse and add the table
+        table_text = match.group(1)
+        rows = _parse_markdown_table(table_text)
+        if rows and len(rows) > 1:  # Need at least header + 1 data row
+            segments.append({"type": "table", "rows": rows})
+        else:
+            # If table parsing failed, treat as text
+            segments.append({"type": "text", "content": table_text})
+
+        last_end = match.end()
+
+    # Add any remaining text after the last table
+    if last_end < len(content):
+        remaining = content[last_end:].strip()
+        if remaining:
+            segments.append({"type": "text", "content": remaining})
+
+    # If no tables found, return entire content as text
+    if not segments:
+        segments.append({"type": "text", "content": content})
+
+    return segments
 
 
 @app.event("app_mention")
@@ -105,8 +232,29 @@ async def handle_mention(event: dict, say, client) -> None:
             await say(text=result.error)
             return
 
-        # Reply
-        await say(markdown_text=result.response)
+        # Extract tables and text segments from response
+        segments = _extract_tables_and_text(result.response)
+
+        # Send each segment appropriately
+        for segment in segments:
+            if segment["type"] == "text":
+                # Convert markdown links to Slack mrkdwn format
+                slack_text = _markdown_to_slack_mrkdwn(segment["content"])
+                await say(text=slack_text)
+            elif segment["type"] == "table":
+                # Send table using Block Kit table block
+                # Note: Tables must be sent as attachments, not blocks
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    text="Table data",  # Fallback for notifications
+                    attachments=[{
+                        "blocks": [{
+                            "type": "table",
+                            "rows": segment["rows"]
+                        }]
+                    }]
+                )
+
         logger.info(f"Replied to {user_id}")
 
     except Exception as e:
@@ -135,6 +283,17 @@ async def main() -> None:
     logger.info("=" * 50)
     logger.info("MongoDB RAG Agent - Slack Bot")
     logger.info("=" * 50)
+
+    # Test Komga connectivity if configured
+    komga = get_komga_client(settings)
+    if komga.is_configured():
+        success, message = await komga.test_connection()
+        if success:
+            logger.info(f"Komga: {message}")
+        else:
+            logger.warning(f"Komga: {message}")
+    else:
+        logger.info("Komga: Not configured (PDF deep links disabled)")
 
     try:
         # Start Socket Mode handler

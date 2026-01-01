@@ -10,6 +10,8 @@ from src.providers import get_llm_model
 from src.dependencies import AgentDependencies
 from src.prompts import MAIN_SYSTEM_PROMPT
 from src.tools import semantic_search, hybrid_search, text_search, SearchResult
+from src.settings import load_settings
+from src.komga import get_komga_client
 
 # Source filter patterns for document categories
 RULES_FILTER = r"^GRR.*\.pdf$"  # Green Ronin rules PDFs
@@ -21,10 +23,24 @@ class RAGState(BaseModel):
     pass
 
 
-def format_search_results(results: List[SearchResult]) -> str:
-    """Format search results as a string for the LLM."""
+async def format_search_results(results: List[SearchResult]) -> str:
+    """
+    Format search results as a string for the LLM.
+
+    Includes Komga deep links when available for PDF sources.
+
+    Args:
+        results: List of search results to format
+
+    Returns:
+        Formatted string with document info and content
+    """
     if not results:
         return "No relevant information found."
+
+    # Get Komga client for deep linking
+    settings = load_settings()
+    komga = get_komga_client(settings)
 
     response_parts = [f"Found {len(results)} relevant documents:\n"]
 
@@ -32,13 +48,26 @@ def format_search_results(results: List[SearchResult]) -> str:
         # Format page info if available
         page_info = ""
         page_numbers = result.metadata.get("page_numbers")
+        first_page = page_numbers[0] if page_numbers else None
+
         if page_numbers:
             if len(page_numbers) == 1:
                 page_info = f", page {page_numbers[0]}"
             else:
                 page_info = f", pages {page_numbers[0]}-{page_numbers[-1]}"
 
-        response_parts.append(f"\n--- Document {i}: {result.document_title} (source: {result.document_source}){page_info} (relevance: {result.similarity:.2f}) ---")
+        # Try to get Komga deep link for PDF sources
+        source_link = ""
+        if result.document_source.endswith(".pdf") and komga.is_configured():
+            url = await komga.get_source_url(result.document_source, first_page)
+            if url:
+                source_link = f" [View in Komga]({url})"
+
+        response_parts.append(
+            f"\n--- Document {i}: {result.document_title} "
+            f"(source: {result.document_source}){page_info}{source_link} "
+            f"(relevance: {result.similarity:.2f}) ---"
+        )
         response_parts.append(result.content)
 
     return "\n".join(response_parts)
@@ -106,7 +135,7 @@ async def search_knowledge_base(
         # Clean up
         await agent_deps.cleanup()
 
-        return format_search_results(results)
+        return await format_search_results(results)
 
     except Exception as e:
         return f"Error searching knowledge base: {str(e)}"
@@ -154,7 +183,7 @@ async def search_rules(
         )
 
         await agent_deps.cleanup()
-        return format_search_results(results)
+        return await format_search_results(results)
 
     except Exception as e:
         return f"Error searching rules: {str(e)}"
@@ -202,7 +231,7 @@ async def search_game_logs(
         )
 
         await agent_deps.cleanup()
-        return format_search_results(results)
+        return await format_search_results(results)
 
     except Exception as e:
         return f"Error searching game logs: {str(e)}"
