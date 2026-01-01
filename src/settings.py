@@ -1,7 +1,7 @@
 """Settings configuration for MongoDB RAG Agent."""
 
-from pydantic_settings import BaseSettings
-from pydantic import Field, ConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -12,7 +12,7 @@ load_dotenv()
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 def load_settings() -> Settings:
     """Load settings with proper error handling."""
     try:
-        return Settings()
+        return Settings()  # type: ignore[call-arg]
     except Exception as e:
         error_msg = f"Failed to load settings: {e}"
         if "mongodb_uri" in str(e).lower():
