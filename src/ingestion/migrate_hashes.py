@@ -3,8 +3,8 @@
 Migration script to compute and store content hashes for existing documents.
 
 This enables incremental ingestion for documents that were ingested before
-the content_hash field was added. Hashes are computed from the source files
-in the documents folder to match what incremental ingestion will compute.
+the content_hash field was added. Hashes are computed from the raw source
+files in the documents folder.
 
 Usage:
     uv run python -m src.ingestion.migrate_hashes -d ./documents
@@ -13,18 +13,16 @@ Usage:
 """
 
 import asyncio
+import hashlib
 import logging
 import argparse
 import os
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
 
 from pymongo import AsyncMongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
-from src.ingestion.ingest import compute_content_hash
 from src.settings import load_settings
 
 load_dotenv()
@@ -36,92 +34,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def read_document(file_path: str) -> Optional[str]:
+def compute_file_hash(file_path: str) -> str:
     """
-    Read document content from file - supports multiple formats via Docling.
-
-    This mirrors the logic in DocumentIngestionPipeline._read_document but
-    without requiring the full pipeline infrastructure.
+    Compute SHA256 hash of a file's raw bytes.
 
     Args:
-        file_path: Path to the document file
+        file_path: Path to the file
 
     Returns:
-        Markdown content string, or None if reading fails
+        Hex digest of SHA256 hash
     """
-    file_ext = os.path.splitext(file_path)[1].lower()
-
-    # Audio formats - transcribe with Whisper ASR
-    audio_formats = ['.mp3', '.wav', '.m4a', '.flac']
-    if file_ext in audio_formats:
-        try:
-            from docling.document_converter import (
-                DocumentConverter,
-                AudioFormatOption
-            )
-            from docling.datamodel.pipeline_options import AsrPipelineOptions
-            from docling.datamodel import asr_model_specs
-            from docling.datamodel.base_models import InputFormat
-            from docling.pipeline.asr_pipeline import AsrPipeline
-
-            audio_path = Path(file_path).resolve()
-            logger.info(f"Transcribing audio: {audio_path.name}")
-
-            pipeline_options = AsrPipelineOptions()
-            pipeline_options.asr_options = asr_model_specs.WHISPER_TURBO
-
-            converter = DocumentConverter(
-                format_options={
-                    InputFormat.AUDIO: AudioFormatOption(
-                        pipeline_cls=AsrPipeline,
-                        pipeline_options=pipeline_options,
-                    )
-                }
-            )
-
-            result = converter.convert(audio_path)
-            return result.document.export_to_markdown()
-
-        except Exception as e:
-            logger.error(f"Failed to transcribe {file_path}: {e}")
-            return None
-
-    # Docling-supported formats (convert to markdown)
-    docling_formats = [
-        '.pdf', '.docx', '.doc', '.pptx', '.ppt',
-        '.xlsx', '.xls', '.html', '.htm',
-        '.md', '.markdown'
-    ]
-
-    if file_ext in docling_formats:
-        try:
-            from docling.document_converter import DocumentConverter
-
-            logger.debug(f"Converting {file_ext}: {os.path.basename(file_path)}")
-
-            converter = DocumentConverter()
-            result = converter.convert(file_path)
-            return result.document.export_to_markdown()
-
-        except Exception as e:
-            logger.error(f"Failed to convert {file_path} with Docling: {e}")
-            # Fall back to raw text
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            except Exception:
-                return None
-
-    # Plain text formats
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    except UnicodeDecodeError:
-        try:
-            with open(file_path, 'r', encoding='latin-1') as f:
-                return f.read()
-        except Exception:
-            return None
+    sha256 = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 async def migrate_hashes(
@@ -130,10 +57,7 @@ async def migrate_hashes(
     force: bool = False
 ) -> None:
     """
-    Compute and store content_hash for documents.
-
-    Reads the source files from the documents folder and computes hashes
-    from the converted content (same as ingestion does).
+    Compute and store content_hash for documents from raw source files.
 
     Args:
         documents_folder: Path to the documents folder
@@ -208,15 +132,7 @@ async def migrate_hashes(
                 continue
 
             try:
-                # Read and convert the file (same as ingestion)
-                content = read_document(file_path)
-
-                if not content:
-                    logger.warning(f"Empty content for {file_path}, skipping")
-                    skipped += 1
-                    continue
-
-                content_hash = compute_content_hash(content)
+                content_hash = compute_file_hash(file_path)
 
                 if dry_run:
                     logger.info(f"  Would update: {title} -> {content_hash[:16]}...")

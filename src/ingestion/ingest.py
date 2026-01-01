@@ -32,17 +32,21 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def compute_content_hash(content: str) -> str:
+def compute_file_hash(file_path: str) -> str:
     """
-    Compute SHA256 hash of document content.
+    Compute SHA256 hash of a file's raw bytes.
 
     Args:
-        content: Document content string
+        file_path: Path to the file
 
     Returns:
         Hex digest of SHA256 hash
     """
-    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+    sha256 = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 class IngestionAction(Enum):
@@ -394,7 +398,8 @@ class DocumentIngestionPipeline:
         source: str,
         content: str,
         chunks: List[DocumentChunk],
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        file_path: str
     ) -> str:
         """
         Save document and chunks to MongoDB.
@@ -405,6 +410,7 @@ class DocumentIngestionPipeline:
             content: Document content
             chunks: List of document chunks with embeddings
             metadata: Document metadata
+            file_path: Path to source file for computing hash
 
         Returns:
             Document ID (ObjectId as string)
@@ -419,7 +425,7 @@ class DocumentIngestionPipeline:
         chunks_collection = self.db[self.settings.mongodb_collection_chunks]
 
         # Insert document with content hash for incremental ingestion
-        content_hash = compute_content_hash(content)
+        content_hash = compute_file_hash(file_path)
         document_dict = {
             "title": title,
             "source": source,
@@ -518,7 +524,8 @@ class DocumentIngestionPipeline:
         source: str,
         content: str,
         chunks: List[DocumentChunk],
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        file_path: str
     ) -> str:
         """
         Update existing document and replace its chunks.
@@ -530,6 +537,7 @@ class DocumentIngestionPipeline:
             content: Document content
             chunks: List of document chunks with embeddings
             metadata: Document metadata
+            file_path: Path to source file for computing hash
 
         Returns:
             Document ID (ObjectId as string)
@@ -546,7 +554,7 @@ class DocumentIngestionPipeline:
         logger.info(f"Deleted {delete_result.deleted_count} old chunks")
 
         # Update document
-        content_hash = compute_content_hash(content)
+        content_hash = compute_file_hash(file_path)
         await documents_collection.update_one(
             {"_id": document_id},
             {"$set": {
@@ -611,7 +619,7 @@ class DocumentIngestionPipeline:
         existing_id: Optional[ObjectId] = None
         needs_update = False
         if incremental:
-            content_hash = compute_content_hash(document_content)
+            content_hash = compute_file_hash(file_path)
             existing_id, needs_update = await self._check_existing_document(
                 document_source,
                 content_hash
@@ -670,7 +678,8 @@ class DocumentIngestionPipeline:
                 document_source,
                 document_content,
                 embedded_chunks,
-                document_metadata
+                document_metadata,
+                file_path
             )
             action = IngestionAction.UPDATED
             logger.info(f"Updated document in MongoDB with ID: {document_id}")
@@ -681,7 +690,8 @@ class DocumentIngestionPipeline:
                 document_source,
                 document_content,
                 embedded_chunks,
-                document_metadata
+                document_metadata,
+                file_path
             )
             action = IngestionAction.INSERTED
             logger.info(f"Saved document to MongoDB with ID: {document_id}")
