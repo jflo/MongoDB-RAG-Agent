@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import random
 import re
 import sys
 
@@ -113,7 +114,7 @@ async def handle_mention(event: dict, say, client) -> None:
     # Post a "thinking" message to show we're processing
     thinking_msg = await client.chat_postMessage(
         channel=channel_id,
-        text="_Thinking..._"
+        text=random.choice(settings.slack_thinking_messages)
     )
     thinking_ts = thinking_msg["ts"]
 

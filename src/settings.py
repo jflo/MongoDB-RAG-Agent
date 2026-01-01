@@ -130,6 +130,20 @@ class Settings(BaseSettings):
         description="Path to local JSON file for caching book ID lookups"
     )
 
+    # Slack Bot UX
+    slack_thinking_messages: list[str] = Field(
+        default=[
+            "_Thinking..._",
+            "_Processing..._",
+            "_Searching the knowledge base..._",
+            "_Let me check..._",
+            "_Consulting my superior intellect..._",
+            "_*sigh* Fine, looking that up..._",
+            "_Running calculations..._",
+        ],
+        description="Random thinking indicator messages shown while processing"
+    )
+
 
 def load_settings() -> Settings:
     """Load settings with proper error handling."""
