@@ -85,7 +85,7 @@ EMBEDDING_MODEL=text-embedding-3-small
 ### 5. Validate Configuration
 
 ```bash
-uv run python -m src.test_config
+uv run python -m src.scripts.test_config
 ```
 
 ### 6. Ingest Documents
@@ -135,10 +135,10 @@ Wait for indexes to show "Active" status.
 
 ```bash
 # CLI interface
-uv run python -m src.cli
+uv run python -m src.interfaces.cli
 
 # Or Slack bot (see Slack Setup below)
-uv run python -m src.slack_bot
+uv run python -m src.interfaces.slack_bot
 ```
 
 ## Slack Bot Setup
@@ -176,7 +176,7 @@ SLACK_APP_TOKEN=xapp-...
 ### 6. Run
 
 ```bash
-uv run python -m src.slack_bot
+uv run python -m src.interfaces.slack_bot
 ```
 
 Mention the bot in any channel it's invited to: `@AnneBonny what are the grappling rules?`
@@ -209,26 +209,39 @@ The filename-to-bookId mapping is cached to avoid repeated API calls. Delete `.k
 
 ```
 src/
-├── agent.py              # Pydantic AI agent with search tools
-├── agent_runner.py       # Shared agent execution logic
-├── cli.py                # Rich-based CLI with streaming
-├── slack_bot.py          # Slack Socket Mode interface
-├── tools.py              # Search tools (semantic, text, hybrid)
-├── prompts.py            # Anne Bonny system prompt
-├── settings.py           # Pydantic Settings configuration
-├── providers.py          # LLM/embedding provider setup
-├── dependencies.py       # MongoDB client injection
-├── komga.py              # Komga PDF deep linking
-├── response_filter.py    # Clean LLM output for display
-├── conversation_store.py # Slack history storage
-├── test_config.py        # Configuration validator
-└── ingestion/
-    ├── ingest.py         # Document ingestion pipeline
-    ├── chunker.py        # Docling HybridChunker wrapper
-    └── embedder.py       # Batch embedding generation
+├── config/                   # Configuration
+│   ├── settings.py          # Pydantic Settings
+│   └── providers.py         # LLM/embedding provider setup
+│
+├── core/                     # Core RAG system
+│   ├── agent.py             # Pydantic AI agent with search tools
+│   ├── tools.py             # Search tools (semantic, text, hybrid)
+│   ├── dependencies.py      # MongoDB/OpenAI client injection
+│   └── prompts.py           # Anne Bonny system prompt
+│
+├── interfaces/               # User interfaces
+│   ├── cli.py               # Rich-based CLI with streaming
+│   ├── slack_bot.py         # Slack Socket Mode interface
+│   └── agent_runner.py      # Shared agent execution logic
+│
+├── integrations/             # External services
+│   ├── komga.py             # Komga PDF deep linking
+│   └── conversation_store.py # Slack history storage
+│
+├── utils/                    # Shared utilities
+│   ├── errors.py            # Error formatting
+│   └── response_filter.py   # Think block/tool artifact filtering
+│
+├── scripts/                  # CLI tools
+│   └── test_config.py       # Configuration validator
+│
+└── ingestion/                # Document processing
+    ├── ingest.py            # Document ingestion pipeline
+    ├── chunker.py           # Docling HybridChunker wrapper
+    └── embedder.py          # Batch embedding generation
 
-documents/                # Your source documents
-.komga_cache.json         # Komga book ID cache (generated)
+documents/                    # Your source documents
+.komga_cache.json            # Komga book ID cache (generated)
 ```
 
 ## Ingestion Options

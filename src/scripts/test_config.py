@@ -1,8 +1,8 @@
 """Configuration validation script for MongoDB RAG Agent."""
 
 import sys
-from src.settings import load_settings
-from src.providers import get_model_info
+from src.config.settings import load_settings
+from src.config.providers import get_model_info
 
 
 def mask_credential(value: str) -> str:

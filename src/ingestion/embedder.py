@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 import openai
 
 from src.ingestion.chunker import DocumentChunk
-from src.settings import load_settings
+from src.config.settings import load_settings
 
 # Load environment variables
 load_dotenv()

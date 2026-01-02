@@ -6,12 +6,12 @@ from typing import Optional, List
 
 from pydantic_ai.ag_ui import StateDeps
 
-from src.providers import get_llm_model
-from src.dependencies import AgentDependencies
-from src.prompts import MAIN_SYSTEM_PROMPT
-from src.tools import semantic_search, hybrid_search, text_search, SearchResult
-from src.settings import load_settings
-from src.komga import get_komga_client
+from src.config.providers import get_llm_model
+from src.config.settings import load_settings
+from src.core.dependencies import AgentDependencies
+from src.core.prompts import MAIN_SYSTEM_PROMPT
+from src.core.tools import semantic_search, hybrid_search, text_search, SearchResult
+from src.integrations.komga import get_komga_client
 
 # Source filter patterns for document categories
 RULES_FILTER = r"^GRR.*\.pdf$"  # Green Ronin rules PDFs

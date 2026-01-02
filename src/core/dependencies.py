@@ -6,7 +6,7 @@ import logging
 from pymongo import AsyncMongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 import openai
-from src.settings import load_settings
+from src.config.settings import load_settings
 
 logger = logging.getLogger(__name__)
 

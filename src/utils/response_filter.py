@@ -10,7 +10,7 @@ import re
 from typing import Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.komga import KomgaClient
+    from src.integrations.komga import KomgaClient
 
 
 def filter_think_streaming(

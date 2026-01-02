@@ -12,13 +12,13 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 
 from pydantic_ai.ag_ui import StateDeps
 
-from src.agent import RAGState
-from src.settings import load_settings
-from src.agent_runner import run_agent
-from src.komga import get_komga_client
-from src.conversation_store import ConversationStore
-from src.response_filter import filter_response_for_slack
-from src.errors import format_error_for_slack, is_retryable_error
+from src.core.agent import RAGState
+from src.config.settings import load_settings
+from src.interfaces.agent_runner import run_agent
+from src.integrations.komga import get_komga_client
+from src.integrations.conversation_store import ConversationStore
+from src.utils.response_filter import filter_response_for_slack
+from src.utils.errors import format_error_for_slack, is_retryable_error
 
 # Configure logging
 logging.basicConfig(

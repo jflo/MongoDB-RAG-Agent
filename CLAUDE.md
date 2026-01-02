@@ -28,18 +28,37 @@ Agentic RAG system combining MongoDB Atlas Vector Search with Pydantic AI for in
 **Architecture:**
 
 ```
-examples/
-├── agent.py           # Pydantic AI agent with StateDeps
-├── cli.py             # Rich-based conversational CLI
-├── dependencies.py    # MongoDB client, OpenAI client injection
-├── providers.py       # LLM/embedding provider configs
-├── settings.py        # Pydantic Settings (env variables)
-├── tools.py           # Search tools (semantic, hybrid)
-├── prompts.py         # System prompts
-└── ingestion/
-    ├── chunker.py     # Docling HybridChunker wrapper
-    ├── embedder.py    # Batch embedding generation
-    └── ingest.py      # Multi-format document pipeline
+src/
+├── config/                   # Configuration
+│   ├── settings.py          # Pydantic Settings (env variables)
+│   └── providers.py         # LLM/embedding provider configs
+│
+├── core/                     # Core RAG system
+│   ├── agent.py             # Pydantic AI agent with StateDeps
+│   ├── tools.py             # Search tools (semantic, text, hybrid)
+│   ├── dependencies.py      # MongoDB client, OpenAI client injection
+│   └── prompts.py           # System prompts
+│
+├── interfaces/               # User interfaces
+│   ├── cli.py               # Rich-based conversational CLI
+│   ├── slack_bot.py         # Slack Socket Mode interface
+│   └── agent_runner.py      # Shared agent execution logic
+│
+├── integrations/             # External services
+│   ├── komga.py             # Komga PDF deep linking
+│   └── conversation_store.py # Slack history storage
+│
+├── utils/                    # Shared utilities
+│   ├── errors.py            # Error formatting
+│   └── response_filter.py   # Think block/tool artifact filtering
+│
+├── scripts/                  # CLI tools
+│   └── test_config.py       # Configuration validator
+│
+└── ingestion/                # Document processing (unchanged)
+    ├── chunker.py           # Docling HybridChunker wrapper
+    ├── embedder.py          # Batch embedding generation
+    └── ingest.py            # Multi-format document pipeline
 ```
 
 ---

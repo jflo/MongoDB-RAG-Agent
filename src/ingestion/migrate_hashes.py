@@ -23,7 +23,7 @@ from pymongo import AsyncMongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
-from src.settings import load_settings
+from src.config.settings import load_settings
 
 load_dotenv()
 

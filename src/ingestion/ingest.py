@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 from src.ingestion.chunker import ChunkingConfig, create_chunker, DocumentChunk
 from src.ingestion.embedder import create_embedder
-from src.settings import load_settings
+from src.config.settings import load_settings
 
 # Load environment variables
 load_dotenv()

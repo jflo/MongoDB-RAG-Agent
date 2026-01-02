@@ -11,10 +11,10 @@ from rich.prompt import Prompt
 from pydantic_ai.ag_ui import StateDeps
 from dotenv import load_dotenv
 
-from src.agent import RAGState
-from src.settings import load_settings
-from src.agent_runner import stream_agent
-from src.komga import get_komga_client
+from src.core.agent import RAGState
+from src.config.settings import load_settings
+from src.interfaces.agent_runner import stream_agent
+from src.integrations.komga import get_komga_client
 
 # Load environment variables
 load_dotenv(override=True)

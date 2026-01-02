@@ -7,7 +7,7 @@ from pydantic_ai import RunContext
 from pydantic import BaseModel, Field
 from pymongo.errors import OperationFailure
 
-from src.dependencies import AgentDependencies
+from src.core.dependencies import AgentDependencies
 
 logger = logging.getLogger(__name__)
 
